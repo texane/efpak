@@ -65,16 +65,16 @@ typedef struct efpak_bfile
 /* common to all block headers */
 typedef struct efpak_bcommon
 {
-  /* block type, one of efpak_btype_t */
-  uint8_t type;
-
   /* per type versioning */
   uint16_t vers;
+
+  /* block type, one of efpak_btype_t */
+  uint8_t type;
 
   /* compression, one of efpak_bcomp_t */
   uint8_t comp;
 
-  /* total block size in bytes, without header. */
+  /* total block size in bytes, without header */
   uint64_t size;
 
 } __attribute__((packed)) efpak_bcommon_t;
