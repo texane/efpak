@@ -9,7 +9,6 @@
 #include <inttypes.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/types.h>
@@ -331,9 +330,38 @@ static int inflate_mem_init
 }
 
 
-/* input stream */
+/* file mapping */
 
-/* exported routines */
+static int map_file(const char* path, const uint8_t** addr, size_t* size)
+{
+  struct stat st;
+  int fd;
+  int err = -1;
+
+  fd = open(path, O_RDONLY);
+  if (fd == -1) goto on_error_0;
+
+  if (fstat(fd, &st)) goto on_error_1;
+
+  *size = st.st_size;
+  *addr = mmap(NULL, *size, PROT_READ, MAP_SHARED, fd, 0);
+  if (*addr == (const uint8_t*)MAP_FAILED) goto on_error_1;
+
+  err = 0;
+
+ on_error_1:
+  close(fd);
+ on_error_0:
+  return err;
+}
+
+static void unmap_file(const uint8_t* addr, size_t size)
+{
+  munmap((void*)addr, size);
+}
+
+
+/* input stream exported routines */
 
 int efpak_istream_init_with_mem
 (efpak_istream_t* is, const uint8_t* data, size_t size)
@@ -349,7 +377,20 @@ int efpak_istream_init_with_mem
 int efpak_istream_init_with_file
 (efpak_istream_t* is, const char* s)
 {
-  return -1;
+  const uint8_t* addr;
+  size_t size;
+  int err;
+
+  if (map_file(s, &addr, &size))
+  {
+    PERROR();
+    return -1;
+  }
+
+  err = efpak_istream_init_with_mem(is, addr, size);
+  unmap_file(addr, size);
+
+  return err;
 }
 
 void efpak_istream_fini
@@ -363,8 +404,10 @@ int efpak_istream_next_block
 {
   if (is->header != NULL)
   {
-    if ((is->off + is->header->comp_block_size) > is->size) return -1;
-    is->off += is->header->comp_block_size;
+    const size_t off =
+      is->off + is->header->header_size + is->header->comp_data_size;
+    if (off > is->size) return -1;
+    is->off += off;
   }
 
   /* TODO: convert header fields if local endianness is not little */
@@ -398,11 +441,11 @@ int efpak_istream_start_block
 
   /* TODO: check sum overflow */
 
-  if (h->header_size > h->comp_block_size) goto on_error;
-  if ((is->off + h->header_size) > is->size) goto on_error;
+  if ((is->off + h->header_size + h->comp_data_size) > is->size)
+    goto on_error;
 
   data = is->data + is->off + h->header_size;
-  size = h->comp_block_size - h->header_size;
+  size = h->comp_data_size;
 
   switch ((efpak_bcomp_t)is->header->comp)
   {
@@ -457,121 +500,218 @@ int efpak_istream_next
 }
 
 
+/* output stream exported routines */
 
-#ifdef EFPAK_UNIT
-
-#if 0
-#include "disk.h"
-
-typedef struct cmdline_info
-{
-  size_t block_count;
-
-#define MAX_BLOCK_COUNT 32
-  uint32_t block_types[MAX_BLOCK_COUNT];
-
-} cmdline_info_t;
-
-static int do_info(efpak_handle_t* efpak, const cmdline_info_t* ci)
+static int deflate_mem
+(const uint8_t* idata, size_t isize, const uint8_t** odata, size_t* osize)
 {
   return -1;
 }
 
-static int do_create(efpak_handle_t* efpak, const cmdline_info_t* ci)
+static int deflate_file_if_large
+(
+ const char* path,
+ const uint8_t** odata, size_t* isize, size_t* osize,
+ unsigned int* is_deflated
+)
 {
-  return -1;
+  const uint8_t* idata;
+
+  if (map_file(path, &idata, isize)) return -1;
+
+  /* compress file larger than 64KB */
+  if (*isize > (64 * 1024))
+  {
+    const int err = deflate_mem(idata, *isize, odata, osize);
+    unmap_file(idata, *isize);
+    if (err) return -1;
+    *is_deflated = 1;
+  }
+  else
+  {
+    *odata = idata;
+    *osize = *isize;
+    *is_deflated = 0;
+  }
+
+  return 0;
 }
 
-static int disk_update_with_efpak(const cmdline_info_t* ci)
+static void init_header
+(efpak_header_t* h)
 {
-  efpak_istream_t is;
-  const efpak_header_t* h;
-  unsigned int is_new_mbr = 0;
-  mbr_t new_mbr;
+  h->vers = 0;
+}
 
-  if (efpak_istream_init_with_file(&is, ci->ipath))
+static int add_block
+(efpak_ostream_t* os, const efpak_header_t* header, const uint8_t* data)
+{
+  ssize_t res;
+
+  /* TODO: convert header fields if local endianness is not little */
+#if (__BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__)
+#error "unsupported endianness"
+#endif
+
+  res = write(os->fd, (const uint8_t*)header, header->header_size);
+  if (res != (ssize_t)header->header_size) return -1;
+
+  if (data != NULL)
   {
-    PERROR();
-    goto on_error_0;
+    res = write(os->fd, data, header->comp_data_size);
+    if (res != (ssize_t)header->comp_data_size) return -1;
   }
 
-  while (1)
-  {
-    if (efpak_istream_next_block(&is, &h))
-    {
-      PERROR();
-      goto on_error_1;
-    }
+  return 0;
+}
 
-    /* last block */
-    if (h == NULL) break ;
+static const size_t header_min_size = offsetof(efpak_header_t, u.per_type);
 
-    switch (h->type)
-    {
-    case EFPAK_BTYPE_FORMAT:
-      {
-	/* TODO: check format information, esp. signature and version */
-	break ;
-      }
+static int efpak_ostream_add_format
+(efpak_ostream_t* os)
+{
+  efpak_header_t h;
 
-    case EFPAK_BTYPE_DISK:
-      {
-	efpak_istream_start_block(&is, h);
-	disk_read(disk, 0, &new_mbr);
-	update_disk(&is, h, &new_mbr);
-	is_new_mbr = 1;
-	efpak_istream_end_block(&is);
+  init_header(&h);
 
-	break ;
-      }
+  h.type = EFPAK_BTYPE_FORMAT;
+  h.comp = EFPAK_BCOMP_NONE;
+  h.header_size = header_min_size + sizeof(efpak_format_header_t);
+  h.comp_data_size = 0;
+  h.raw_data_size = 0;
 
-    case EFPAK_BTYPE_PART:
-      {
-	efpak_istream_start_block(&is, h);
-	update_part(&new_mbr);
-	efpak_istream_start_block(&is);
+  memcpy(h.u.format.signature, EFPAK_FORMAT_SIGNATURE, 4);
+  h.u.format.vers = 0;
 
-	if (is_new_mbr == 0) disk_read(disk, 0, &new_mbr);
-	/* TODO: update new_mbr in memory contents */
-	is_new_mbr = 1;
+  return add_block(os, &h, NULL);
+}
 
-	break ;
-      }
-
-    case EFPAK_BTYPE_FILE:
-      {
-	break ;
-      }
-
-    default:
-      {
-	/* skip the block */
-	break ;
-      }
-    }
-  }
-
-  if (is_new_mbr)
-  {
-    disk_write(disk, &new_mbr);
-  }
+int efpak_ostream_init_with_file
+(efpak_ostream_t* os, const char* path)
+{
+  os->fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0755);
+  if (os->fd == -1) goto on_error_0;
+  if (efpak_ostream_add_format(os)) goto on_error_1;
+  return 0;
 
  on_error_1:
-  efpak_istream_fini(&is);
+  close(os->fd);
+ on_error_0:
+  return -1;
+}
+
+void efpak_ostream_fini
+(efpak_ostream_t* os)
+{
+  close(os->fd);
+}
+
+int efpak_ostream_add_disk
+(efpak_ostream_t* os, const char* path)
+{
+  efpak_header_t h;
+  unsigned int is_comp;
+  const uint8_t* data;
+  size_t comp_size;
+  size_t raw_size;
+  int err = -1;
+
+  if (deflate_file_if_large(path, &data, &raw_size, &comp_size, &is_comp))
+    goto on_error_0;
+
+  init_header(&h);
+
+  h.type = EFPAK_BTYPE_DISK;
+  h.comp = is_comp ? EFPAK_BCOMP_ZLIB : EFPAK_BCOMP_NONE;
+  h.header_size = header_min_size + sizeof(efpak_disk_header_t);
+  h.comp_data_size = comp_size;
+  h.raw_data_size = raw_size;
+
+  if (add_block(os, &h, data)) goto on_error_1;
+
+  err = 0;
+
+ on_error_1:
+  unmap_file(data, comp_size);
  on_error_0:
   return err;
 }
 
-static int do_update_disk(const cmdline_info_t* ci)
+int efpak_ostream_add_part
+(efpak_ostream_t* os, const char* path, efpak_partid_t id)
 {
-  /* TODO: map the file */
-  return disk_update_with_efpak(&disk, data, ci);
-}
-#endif /* 0 */
+  efpak_header_t h;
+  unsigned int is_comp;
+  const uint8_t* data;
+  size_t comp_size;
+  size_t raw_size;
+  int err = -1;
 
-int main(int ac, char** av)
+  if (deflate_file_if_large(path, &data, &raw_size, &comp_size, &is_comp))
+    goto on_error_0;
+
+  init_header(&h);
+
+  h.type = EFPAK_BTYPE_PART;
+  h.comp = is_comp ? EFPAK_BCOMP_ZLIB : EFPAK_BCOMP_NONE;
+  h.header_size = header_min_size + sizeof(efpak_part_header_t);
+  h.comp_data_size = comp_size;
+  h.raw_data_size = raw_size;
+
+  h.u.part.id = id;
+
+  if (add_block(os, &h, data)) goto on_error_1;
+
+  err = 0;
+
+ on_error_1:
+  unmap_file(data, comp_size);
+ on_error_0:
+  return err;
+}
+
+int efpak_ostream_add_file
+(efpak_ostream_t* os, const char* lpath, const char* dpath)
 {
-  return 0;
-}
+  /* lpath the local path */
+  /* dpath the destination path */
 
-#endif /* EFPAK_UNIT */
+  efpak_header_t* h;
+  size_t header_size;
+  unsigned int is_comp;
+  const uint8_t* data;
+  size_t comp_size;
+  size_t raw_size;
+  size_t len;
+  int err = -1;
+
+  len = strlen(dpath) + 1;
+  header_size = header_min_size + offsetof(efpak_file_header_t, path) + len;
+  h = malloc(header_size);
+  if (h == NULL) goto on_error_0;
+
+  if (deflate_file_if_large(lpath, &data, &raw_size, &comp_size, &is_comp))
+    goto on_error_1;
+
+  init_header(h);
+
+  h->type = EFPAK_BTYPE_FILE;
+  h->comp = is_comp ? EFPAK_BCOMP_ZLIB : EFPAK_BCOMP_NONE;
+  h->header_size = header_size;
+  h->comp_data_size = comp_size;
+  h->raw_data_size = raw_size;
+
+  h->u.file.path_len = len;
+  strcpy((char*)h->u.file.path, dpath);
+
+  if (add_block(os, h, data)) goto on_error_2;
+
+  err = 0;
+
+ on_error_2:
+  unmap_file(data, comp_size);
+ on_error_1:
+  free(h);
+ on_error_0:
+  return err;
+}

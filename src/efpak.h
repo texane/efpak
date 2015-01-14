@@ -44,6 +44,7 @@ typedef enum efpak_partid
 typedef struct efpak_format_header
 {
   /* must be EFPK */
+#define EFPAK_FORMAT_SIGNATURE "EFPK"
   uint8_t signature[4];
 
   /* efpak format version */
@@ -63,16 +64,13 @@ typedef struct efpak_part_header
 {
   /* one of efpak_partid_t */
   uint8_t id;
-
-  /* partition offset and size */
-  uint64_t off;
-  uint64_t size;
 } __attribute__((packed)) efpak_part_header_t;
 
 
 /* file block header */
 typedef struct efpak_file_header
 {
+  /* must be a 0 terminated string. len includes 0. */
   uint16_t path_len;
   uint8_t path[1];
 } __attribute__((packed)) efpak_file_header_t;
@@ -93,10 +91,11 @@ typedef struct efpak_header
   /* header size in bytes */
   uint64_t header_size;
 
-  /* compressed and raw block size in bytes, header included */
+  /* compressed and raw block data size in bytes */
+  /* header is not included */
   /* if not compressed, comp_block_size == raw_block_size */
-  uint64_t comp_block_size;
-  uint64_t raw_block_size;
+  uint64_t comp_data_size;
+  uint64_t raw_data_size;
 
   union
   {
@@ -104,6 +103,7 @@ typedef struct efpak_header
     efpak_disk_header_t disk;
     efpak_part_header_t part;
     efpak_file_header_t file;
+    uint8_t per_type[1];
   } __attribute__((packed)) u;
 
 } __attribute__((packed)) efpak_header_t;
@@ -147,9 +147,12 @@ typedef struct efpak_imem
 
 typedef struct efpak_istream
 {
+  /* input data buffer */
   const uint8_t* data;
-  size_t off;
   size_t size;
+
+  /* offset in data buffer */
+  size_t off;
 
   /* current block header */
   const efpak_header_t* header;
@@ -163,6 +166,13 @@ typedef struct efpak_istream
 } efpak_istream_t;
 
 
+typedef struct efpak_ostream
+{
+  /* output file descriptor */
+  int fd;
+} efpak_ostream_t;
+
+
 /* input stream exported api */
 
 int efpak_istream_init_with_file(efpak_istream_t*, const char*);
@@ -173,6 +183,12 @@ int efpak_istream_start_block(efpak_istream_t*);
 void efpak_istream_end_block(efpak_istream_t*);
 int efpak_istream_seek(efpak_istream_t*, size_t);
 int efpak_istream_next(efpak_istream_t*, const uint8_t**, size_t*);
+
+int efpak_ostream_init_with_file(efpak_ostream_t*, const char*);
+void efpak_ostream_fini(efpak_ostream_t*);
+int efpak_ostream_add_disk(efpak_ostream_t*, const char*);
+int efpak_ostream_add_part(efpak_ostream_t*, const char*, efpak_partid_t);
+int efpak_ostream_add_file(efpak_ostream_t*, const char*, const char*);
 
 
 #endif /* EFPAK_H_INCLUDED */
