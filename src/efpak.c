@@ -22,7 +22,7 @@ do {					\
   printf("[!] %u\n", __LINE__);		\
   fflush(stdout);			\
 } while (0)
-#elif 1
+#elif 0
 #include "log.h"
 #define PERROR() LOG_ERROR("")
 #else
@@ -377,39 +377,29 @@ int efpak_istream_init_with_mem
 int efpak_istream_init_with_file
 (efpak_istream_t* is, const char* s)
 {
-  const uint8_t* addr;
+  const uint8_t* data;
   size_t size;
-  int err;
 
-  if (map_file(s, &addr, &size))
-  {
-    PERROR();
-    return -1;
-  }
+  if (map_file(s, &data, &size)) goto on_error_0;
+  if (efpak_istream_init_with_mem(is, data, size)) goto on_error_1;
+  return 0;
 
-  err = efpak_istream_init_with_mem(is, addr, size);
-  unmap_file(addr, size);
-
-  return err;
+ on_error_1:
+  unmap_file(data, size);
+ on_error_0:
+  return -1;
 }
 
 void efpak_istream_fini
 (efpak_istream_t* is)
 {
   if (is->is_in_block == 1) efpak_istream_end_block(is);
+  unmap_file(is->data, is->size);
 }
 
 int efpak_istream_next_block
 (efpak_istream_t* is, const efpak_header_t** h)
 {
-  if (is->header != NULL)
-  {
-    const size_t off =
-      is->off + is->header->header_size + is->header->comp_data_size;
-    if (off > is->size) return -1;
-    is->off += off;
-  }
-
   /* TODO: convert header fields if local endianness is not little */
   /* TODO: to do so, first internally allocate a header, convert */
   /* TODO: the fields and return this allocated header. take care */
@@ -419,11 +409,25 @@ int efpak_istream_next_block
 #error "unsupported endianness"
 #endif
 
+  if (is->header != NULL)
+  {
+    const size_t off =
+      is->off + is->header->header_size + is->header->comp_data_size;
+    if (off > is->size) return -1;
+    is->off += off;
+  }
+
+  if (is->off == is->size)
+  {
+    is->header = NULL;
+    goto on_success;
+  }
+
   is->header = (const efpak_header_t*)(is->data + is->off);
   if ((is->off + is->header->header_size) > is->size) return -1;
 
+ on_success:
   *h = is->header;
-
   return 0;
 }
 

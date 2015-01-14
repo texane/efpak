@@ -1,56 +1,26 @@
+/* tool to manage efpak files */
+
+
+#include <stdio.h>
 #include <fcntl.h>
-#include <sys/ioctl.h>
-#include <sys/stat.h>
-#include <sys/mman.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
 #include <sys/types.h>
+#include <sys/stat.h>
+#include "efpak.h"
+#include "disk.h"
 
 
-#include 
-
-
-#ifdef EFPAK_UNIT
 #include <stdio.h>
 #define PERROR()			\
 do {					\
   printf("[!] %u\n", __LINE__);		\
   fflush(stdout);			\
 } while (0)
-#elif 1
-#include "log.h"
-#define PERROR() LOG_ERROR("")
-#else
-#define PERROR()
-#endif
 
-
-
-/* tool to manage efpak files */
-
-
-#ifdef EFPAK_UNIT
 
 #if 0
-#include "disk.h"
-
-typedef struct cmdline_info
-{
-  size_t block_count;
-
-#define MAX_BLOCK_COUNT 32
-  uint32_t block_types[MAX_BLOCK_COUNT];
-
-} cmdline_info_t;
-
-static int do_info(efpak_handle_t* efpak, const cmdline_info_t* ci)
-{
-  return -1;
-}
-
-static int do_create(efpak_handle_t* efpak, const cmdline_info_t* ci)
-{
-  return -1;
-}
-
 static int disk_update_with_efpak(const cmdline_info_t* ci)
 {
   efpak_istream_t is;
@@ -130,17 +100,193 @@ static int disk_update_with_efpak(const cmdline_info_t* ci)
  on_error_0:
   return err;
 }
-
-static int do_update_disk(const cmdline_info_t* ci)
-{
-  /* TODO: map the file */
-  return disk_update_with_efpak(&disk, data, ci);
-}
 #endif /* 0 */
 
-int main(int ac, char** av)
+static int do_list_headers(int ac, const char** av)
 {
+  const char* const path = av[2];
+  efpak_istream_t is;
+  const efpak_header_t* h;
+  int err = -1;
+
+  if (ac != 3) goto on_error_0;
+
+  if (efpak_istream_init_with_file(&is, path)) goto on_error_0;
+
+  while (1)
+  {
+    if (efpak_istream_next_block(&is, &h)) goto on_error_1;
+    if (h == NULL) break ;
+
+    printf("header:\n");
+
+    switch (h->type)
+    {
+    case EFPAK_BTYPE_FORMAT:
+      {
+	const uint8_t* const s = h->u.format.signature;
+	printf(".type     : format\n");
+	printf(".vers     : 0x%02x\n", h->vers);
+	printf(".signature: %c%c%c%c\n", s[0], s[1], s[2], s[3]);
+	break ;
+      }
+
+    case EFPAK_BTYPE_DISK:
+      {
+	printf(".type: disk\n");
+	break ;
+      }
+
+    case EFPAK_BTYPE_PART:
+      {
+	printf(".type: part\n");
+	break ;
+      }
+
+    case EFPAK_BTYPE_FILE:
+      {
+	printf(".type: file\n");
+	break ;
+      }
+
+    default:
+      {
+	printf(".type: unrecognized (0x%02x)\n", h->type);
+	break ;
+      }
+    }
+
+    printf("\n");
+  }
+
+  err = 0;
+
+ on_error_1:
+  efpak_istream_fini(&is);
+ on_error_0:
+  return err;
+}
+
+static int do_create(int ac, const char** av)
+{
+  const char* const path = av[2];
+  struct stat st;
+  efpak_ostream_t os;
+
+  if (ac != 3) return -1;
+
+  /* already exists or something */
+  errno = 0;
+  if (stat(path, &st) == 0) errno = 0;
+  if (errno != ENOENT) return -1;
+
+  if (efpak_ostream_init_with_file(&os, path)) return -1;
+  efpak_ostream_fini(&os);
   return 0;
 }
 
-#endif /* EFPAK_UNIT */
+static int do_add_disk(int ac, const char** av)
+{
+  return -1;
+}
+
+static int do_add_part(int ac, const char** av)
+{
+  return -1;
+}
+
+static int do_add_file(int ac, const char** av)
+{
+  return -1;
+}
+
+static int do_get_disk(int ac, const char** av)
+{
+  return -1;
+}
+
+static int do_get_part(int ac, const char** av)
+{
+  return -1;
+}
+
+static int do_get_file(int ac, const char** av)
+{
+  return -1;
+}
+
+static int do_update_disk(int ac, const char** av)
+{
+  return -1;
+}
+
+static int do_help(int ac, const char** av)
+{
+  const char* const usage =
+    ". package info: \n"
+    " efpak list_headers \n"
+    "\n"
+    ". package creation: \n"
+    " efpak create efpak_path \n"
+    "\n"
+    ". adding contents: \n"
+    " efpak add_disk efpak_path disk_path \n"
+    " efpak add_part efpak_path {boot,root,app} part_path \n"
+    " efpak add_file efpak_path \n"
+    "\n"
+    ". extracting contents: \n"
+    " efpak get_disk efpak_path disk_path \n"
+    " efpak get_part efpak_path {boot,root,app} part_path \n"
+    " efpak get_file efpak_path file_name file_path \n"
+    "\n"
+    ". disk update: \n"
+    " efpak update_disk efpak_path {root,disk_path} \n"
+    ;
+
+  printf("%s\n", usage);
+
+  return -1;
+}
+
+int main(int ac, const char** av)
+{
+  static const struct
+  {
+    const char* name;
+    int (*fn)(int, const char**);
+  } ops[] =
+  {
+    { "list_headers", do_list_headers },
+    { "create", do_create },
+    { "add_disk", do_add_disk },
+    { "add_part", do_add_part },
+    { "add_file", do_add_file },
+    { "get_disk", do_get_disk },
+    { "get_part", do_get_part },
+    { "get_file", do_get_file },
+    { "update_disk", do_update_disk },
+    { "help", do_help }
+  };
+
+  static const size_t n = sizeof(ops) / sizeof(ops[0]);
+  size_t i;
+  int err;
+
+  if (ac <= 2)
+  {
+    i = n - 1;
+    goto on_help;
+  }
+
+  for (i = 0; i != n; ++i)
+  {
+    if (strcmp(ops[i].name, av[1]) == 0) break ;
+  }
+  if (i == n) i = n - 1;
+
+ on_help:
+  err = ops[i].fn(ac, av);
+  if (err) printf("failure\n");
+  else printf("success\n");
+  return err;
+}
