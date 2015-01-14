@@ -414,7 +414,7 @@ int efpak_istream_next_block
     const size_t off =
       is->off + is->header->header_size + is->header->comp_data_size;
     if (off > is->size) return -1;
-    is->off += off;
+    is->off = off;
   }
 
   if (is->off == is->size)

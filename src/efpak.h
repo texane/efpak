@@ -93,7 +93,7 @@ typedef struct efpak_header
 
   /* compressed and raw block data size in bytes */
   /* header is not included */
-  /* if not compressed, comp_block_size == raw_block_size */
+  /* if not compressed, comp_data_size == raw_data_size */
   uint64_t comp_data_size;
   uint64_t raw_data_size;
 

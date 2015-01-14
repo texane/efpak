@@ -125,8 +125,9 @@ static int do_list_headers(int ac, const char** av)
     case EFPAK_BTYPE_FORMAT:
       {
 	const uint8_t* const s = h->u.format.signature;
-	printf(".type     : format\n");
 	printf(".vers     : 0x%02x\n", h->vers);
+	printf(".type     : format\n");
+	printf(".comp     : 0x%02x\n", h->comp);
 	printf(".signature: %c%c%c%c\n", s[0], s[1], s[2], s[3]);
 	break ;
       }
@@ -145,7 +146,12 @@ static int do_list_headers(int ac, const char** av)
 
     case EFPAK_BTYPE_FILE:
       {
-	printf(".type: file\n");
+	printf(".vers       : 0x%02x\n", h->vers);
+	printf(".type       : file\n");
+	printf(".comp       : 0x%02x\n", h->comp);
+	printf(".header_size: %zu\n", (size_t)h->header_size);
+	printf(".comp_size  : %zu\n", (size_t)h->comp_data_size);
+	printf(".raw_size   : %zu\n", (size_t)h->raw_data_size);
 	break ;
       }
 
@@ -175,7 +181,7 @@ static int do_create(int ac, const char** av)
 
   if (ac != 3) return -1;
 
-  /* already exists or something */
+  /* must not already exist */
   errno = 0;
   if (stat(path, &st) == 0) errno = 0;
   if (errno != ENOENT) return -1;
@@ -197,7 +203,22 @@ static int do_add_part(int ac, const char** av)
 
 static int do_add_file(int ac, const char** av)
 {
-  return -1;
+  const char* const efpak_path = av[2];
+  const char* const src_path = av[3];
+  const char* const dst_path = av[4];
+
+  efpak_ostream_t os;
+  int err = -1;
+
+  if (ac != 5) goto on_error_0;
+  if (efpak_ostream_init_with_file(&os, efpak_path)) goto on_error_0;
+  if (efpak_ostream_add_file(&os, src_path, dst_path)) goto on_error_1;
+  err = 0;
+
+ on_error_1:
+  efpak_ostream_fini(&os);
+ on_error_0:
+  return err;
 }
 
 static int do_get_disk(int ac, const char** av)
