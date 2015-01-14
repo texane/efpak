@@ -502,10 +502,47 @@ int efpak_istream_next
 
 /* output stream exported routines */
 
+static int deflateInit2Default(z_stream* z)
+{
+  return deflateInit2
+    (z, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
+     16 + MAX_WBITS, 8, Z_DEFAULT_STRATEGY);
+}
+
 static int deflate_mem
 (const uint8_t* idata, size_t isize, const uint8_t** odata, size_t* osize)
 {
-  return -1;
+  uLong dlen;
+  z_stream z;
+  int err = -1;
+
+  dlen = compressBound((uLong)isize);
+
+  *odata = malloc((size_t)dlen);
+  if (*odata == NULL) goto on_error_0;
+
+  z.next_in = (Bytef*)idata;
+  z.avail_in = (uInt)isize;
+
+  z.next_out = (Bytef*)*odata;
+  z.avail_out = (uInt)*osize;
+
+  z.zalloc = Z_NULL;
+  z.zfree = Z_NULL;
+  z.opaque = Z_NULL;
+
+  if (deflateInit2Default(&z) != Z_OK) goto on_error_1;
+  if (deflate(&z, 0) != Z_OK) goto on_error_2;
+
+  *osize = (size_t)dlen;
+  err = 0;
+
+ on_error_2:
+  deflateEnd(&z);
+ on_error_1:
+  if (err) free((void*)*odata);
+ on_error_0:
+  return err;
 }
 
 static int deflate_file_if_large
@@ -632,7 +669,8 @@ int efpak_ostream_add_disk
   err = 0;
 
  on_error_1:
-  unmap_file(data, comp_size);
+  if (is_comp) free((void*)data);
+  else unmap_file(data, comp_size);
  on_error_0:
   return err;
 }
@@ -665,7 +703,8 @@ int efpak_ostream_add_part
   err = 0;
 
  on_error_1:
-  unmap_file(data, comp_size);
+  if (is_comp) free((void*)data);
+  else unmap_file(data, comp_size);
  on_error_0:
   return err;
 }
@@ -709,7 +748,8 @@ int efpak_ostream_add_file
   err = 0;
 
  on_error_2:
-  unmap_file(data, comp_size);
+  if (is_comp) free((void*)data);
+  else unmap_file(data, comp_size);
  on_error_1:
   free(h);
  on_error_0:
