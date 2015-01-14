@@ -2,11 +2,13 @@
 #define EFPAK_H_INCLUDED
 
 
-#include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
+#include "zlib.h"
 
 
-/* data words are stored in little endian format */
+/* efpak file format */
+/* words are stored in little endian */
 
 /* block types */
 typedef enum efpak_btype
@@ -105,6 +107,72 @@ typedef struct efpak_header
   } __attribute__((packed)) u;
 
 } __attribute__((packed)) efpak_header_t;
+
+
+/* input stream handling related types */
+
+typedef struct efpak_inflate
+{
+  z_stream z;
+
+#define EFPAK_INFLATE_FLAG_EOI (1 << 1)
+  uint32_t flags;
+
+  uint8_t* obuf;
+  size_t osize;
+
+} efpak_inflate_t;
+
+
+typedef struct efpak_imem
+{
+  /* input block memory */
+
+  /* common */
+  const uint8_t* data;
+  size_t size;
+  size_t off;
+
+  /* zlib memory specific */
+  efpak_inflate_t inflate;
+  const uint8_t* inflate_data;
+  size_t inflate_size;
+
+  int (*seek)(struct efpak_imem*, size_t);
+  int (*next)(struct efpak_imem*, const uint8_t**, size_t*);
+  void (*fini)(struct efpak_imem*);
+
+} efpak_imem_t;
+
+
+typedef struct efpak_istream
+{
+  const uint8_t* data;
+  size_t off;
+  size_t size;
+
+  /* current block header */
+  const efpak_header_t* header;
+
+  /* start_block called */
+  unsigned int is_in_block;
+
+  /* current block memory */
+  efpak_imem_t mem;
+
+} efpak_istream_t;
+
+
+/* input stream exported api */
+
+int efpak_istream_init_with_file(efpak_istream_t*, const char*);
+int efpak_istream_init_with_mem(efpak_istream_t*, const uint8_t*, size_t);
+void efpak_istream_fini(efpak_istream_t*);
+int efpak_istream_next_block(efpak_istream_t*, const efpak_header_t**);
+int efpak_istream_start_block(efpak_istream_t*);
+void efpak_istream_end_block(efpak_istream_t*);
+int efpak_istream_seek(efpak_istream_t*, size_t);
+int efpak_istream_next(efpak_istream_t*, const uint8_t**, size_t*);
 
 
 #endif /* EFPAK_H_INCLUDED */
