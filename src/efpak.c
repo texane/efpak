@@ -626,9 +626,17 @@ static int efpak_ostream_add_format
 int efpak_ostream_init_with_file
 (efpak_ostream_t* os, const char* path)
 {
-  os->fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0755);
+  off_t off;
+
+  os->fd = open(path, O_RDWR | O_CREAT, 0755);
   if (os->fd == -1) goto on_error_0;
-  if (efpak_ostream_add_format(os)) goto on_error_1;
+
+  off = lseek(os->fd, 0, SEEK_END);
+  if (off == (off_t)-1) goto on_error_1;
+
+  /* add header in newly created file */
+  if ((off == 0) && efpak_ostream_add_format(os)) goto on_error_1;
+
   return 0;
 
  on_error_1:
