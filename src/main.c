@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <string.h>
+#include <stdint.h>
+#include <inttypes.h>
 #include <unistd.h>
 #include <errno.h>
 #include <sys/types.h>
@@ -119,45 +121,51 @@ static int do_list_headers(int ac, const char** av)
     if (h == NULL) break ;
 
     printf("header:\n");
+    printf(".vers          : 0x%02x\n", h->vers);
+    printf(".type          : 0x%02x\n", h->type);
+    printf(".comp          : 0x%02x\n", h->comp);
+    printf(".header_size   : %" PRIu64 "\n", h->header_size);
+    printf(".comp_data_size: %" PRIu64 "\n", h->comp_data_size);
+    printf(".raw_data_size : %" PRIu64 "\n", h->raw_data_size);
 
     switch (h->type)
     {
     case EFPAK_BTYPE_FORMAT:
       {
 	const uint8_t* const s = h->u.format.signature;
-	printf(".vers     : 0x%02x\n", h->vers);
-	printf(".type     : format\n");
-	printf(".comp     : 0x%02x\n", h->comp);
 	printf(".signature: %c%c%c%c\n", s[0], s[1], s[2], s[3]);
 	break ;
       }
 
     case EFPAK_BTYPE_DISK:
       {
-	printf(".type: disk\n");
 	break ;
       }
 
     case EFPAK_BTYPE_PART:
       {
-	printf(".type: part\n");
+	printf(".id            : 0x%02x\n", h->u.part.id);
 	break ;
       }
 
     case EFPAK_BTYPE_FILE:
       {
-	printf(".vers       : 0x%02x\n", h->vers);
-	printf(".type       : file\n");
-	printf(".comp       : 0x%02x\n", h->comp);
-	printf(".header_size: %zu\n", (size_t)h->header_size);
-	printf(".comp_size  : %zu\n", (size_t)h->comp_data_size);
-	printf(".raw_size   : %zu\n", (size_t)h->raw_data_size);
+	const char* s = "invalid";
+	size_t i;
+	for (i = 0; i != h->u.file.path_len; ++i)
+	{
+	  if (h->u.file.path[i] == 0)
+	  {
+	    s = (const char*)h->u.file.path;
+	    break ;
+	  }
+	}
+	printf(".path          : %s\n", s);
 	break ;
       }
 
     default:
       {
-	printf(".type: unrecognized (0x%02x)\n", h->type);
 	break ;
       }
     }
