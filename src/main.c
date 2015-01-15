@@ -10,8 +10,12 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include "efpak.h"
 #include "disk.h"
+#ifdef CONFIG_LIBDEEP
+#include "libdeep.h"
+#endif /* CONFIG_LIBDEEP */
 
 
 #include <stdio.h>
@@ -339,6 +343,64 @@ static int do_write_disk(int ac, const char** av)
   return err;
 }
 
+static int do_send(int ac, const char** av)
+{
+#ifdef CONFIG_LIBDEEP
+
+  const char* const path = av[2];
+  const char* addr = av[3];
+
+  static const int timeout = 100000;
+
+  deephandle_t dev;
+  deepbindata_t data;
+  char cmd[128];
+  int err = -1;
+  int fd;
+  struct stat st;
+
+  if (ac != 4) goto on_error_0;
+
+  dev = deepdev_open((char*)addr);
+  if (dev == BAD_HANDLE) goto on_error_0;
+
+  deepdev_setparam(dev, "TIMEOUT", DDPAR(timeout));
+
+  fd = open(path, O_RDONLY);
+  if (fd == -1) goto on_error_1;
+
+  if (fstat(fd, &st)) goto on_error_2;
+
+  data.bufsize = st.st_size;
+  data.datasize = st.st_size;
+  data.datatype = BIN_8;
+  data.databuf = mmap(NULL, data.bufsize, PROT_READ, MAP_SHARED, fd, 0);
+  if (data.databuf == MAP_FAILED) goto on_error_2;
+
+  snprintf(cmd, sizeof(cmd), "#*PROG");
+
+  if (deepdev_bincmd(dev, cmd, &data) != DEEPDEV_OK) goto on_error_3;
+
+  /* success */
+
+  err = 0;
+
+ on_error_3:
+  munmap(data.databuf, data.bufsize);
+ on_error_2:
+  close(fd);
+ on_error_1:
+  deepdev_close(dev);
+ on_error_0:
+  return err;
+
+#else
+
+  return -1;
+
+#endif /* CONFIG_LIBDEEP */
+}
+
 static int do_help(int ac, const char** av)
 {
   const char* const usage =
@@ -356,10 +418,13 @@ static int do_help(int ac, const char** av)
     ". extracting contents: \n"
     " efpak extract efpak_path dest_dir \n"
     "\n"
-    ". disk update: \n"
+    ". local disk update: \n"
     " efpak update_disk efpak_path {root,disk_name(mmcblk0,sdd..)} \n"
-    ". disk raw write: \n"
+    ". local disk raw write: \n"
     " efpak write_disk efpak_path {root,disk_name(mmcblk0,sdd...)} \n"
+    "\n"
+    ". send package to remote device: \n"
+    " efpak send efpak_path dev_addr \n"
     ;
 
   printf("%s\n", usage);
@@ -383,6 +448,7 @@ int main(int ac, const char** av)
     { "extract", do_extract },
     { "update_disk", do_update_disk },
     { "write_disk", do_write_disk },
+    { "send", do_send },
     { "help", do_help }
   };
 
