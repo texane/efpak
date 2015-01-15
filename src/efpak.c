@@ -536,7 +536,7 @@ static int deflate_mem
   z.opaque = Z_NULL;
 
   if (deflateInit2Default(&z) != Z_OK) goto on_error_1;
-  if (deflate(&z, 0) != Z_OK) goto on_error_2;
+  if (deflate(&z, Z_SYNC_FLUSH) != Z_OK) goto on_error_2;
   if (z.avail_in) goto on_error_2;
 
   *osize = (size_t)dlen - (size_t)z.avail_out;
