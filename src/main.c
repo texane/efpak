@@ -326,8 +326,6 @@ static int do_extract(int ac, const char** av)
       }
     }
 
-    printf("ok: %u\n", n - 1);
-
     close(fd);
 
     efpak_istream_end_block(&is);
@@ -343,7 +341,84 @@ static int do_extract(int ac, const char** av)
 
 static int do_update_disk(int ac, const char** av)
 {
-  return -1;
+  const char* const efpak_path = av[2];
+  const char* disk_name = av[3];
+  int err = -1;
+  efpak_istream_t is;
+  const efpak_header_t* h;
+  disk_handle_t disk;
+
+  if (ac != 4) goto on_error_0;
+
+  if (efpak_istream_init_with_file(&is, efpak_path)) goto on_error_0;
+
+  while (1)
+  {
+    if (efpak_istream_next_block(&is, &h)) goto on_error_1;
+    if (h == NULL) break ;
+    if (h->type == EFPAK_BTYPE_DISK) break ;
+  }
+
+  if (efpak_istream_start_block(&is)) goto on_error_1;
+
+  if (strcmp(disk_name, "root") == 0) err = disk_open_root(&disk);
+  else err = disk_open_dev(&disk, disk_name);
+  if (err) goto on_error_1;
+  err = -1;
+
+  if (disk_update_with_efpak(&disk, &is)) goto on_error_2;
+
+  efpak_istream_end_block(&is);
+
+  err = 0;
+
+ on_error_2:
+  disk_close(&disk);
+ on_error_1:
+  efpak_istream_fini(&is);
+ on_error_0:
+  return err;
+}
+
+static int do_write_disk(int ac, const char** av)
+{
+  const char* const efpak_path = av[2];
+  const char* disk_name = av[3];
+  int err = -1;
+  efpak_istream_t is;
+  const efpak_header_t* h;
+  disk_handle_t disk;
+
+  if (ac != 4) goto on_error_0;
+
+  if (efpak_istream_init_with_file(&is, efpak_path)) goto on_error_0;
+
+  while (1)
+  {
+    if (efpak_istream_next_block(&is, &h)) goto on_error_1;
+    if (h == NULL) break ;
+    if (h->type == EFPAK_BTYPE_DISK) break ;
+  }
+
+  if (efpak_istream_start_block(&is)) goto on_error_1;
+
+  if (strcmp(disk_name, "root") == 0) err = disk_open_root(&disk);
+  else err = disk_open_dev(&disk, disk_name);
+  if (err) goto on_error_1;
+  err = -1;
+
+  if (disk_write_with_efpak(&disk, 0, &is, 0, (size_t)-1)) goto on_error_2;
+
+  efpak_istream_end_block(&is);
+
+  err = 0;
+
+ on_error_2:
+  disk_close(&disk);
+ on_error_1:
+  efpak_istream_fini(&is);
+ on_error_0:
+  return err;
 }
 
 static int do_help(int ac, const char** av)
@@ -364,7 +439,9 @@ static int do_help(int ac, const char** av)
     " efpak extract efpak_path dest_dir \n"
     "\n"
     ". disk update: \n"
-    " efpak update_disk efpak_path {root,disk_path} \n"
+    " efpak update_disk efpak_path {root,disk_name(mmcblk0,sdd..)} \n"
+    ". disk raw write: \n"
+    " efpak write_disk efpak_path {root,disk_name(mmcblk0,sdd...)} \n"
     ;
 
   printf("%s\n", usage);
@@ -387,6 +464,7 @@ int main(int ac, const char** av)
     { "add_file", do_add_file },
     { "extract", do_extract },
     { "update_disk", do_update_disk },
+    { "write_disk", do_write_disk },
     { "help", do_help }
   };
 

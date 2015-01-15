@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 #include <sys/types.h>
+#include "efpak.h"
 
 
 typedef struct disk_handle
@@ -33,10 +34,10 @@ int disk_open_dev(disk_handle_t*, const char*);
 void disk_close(disk_handle_t*);
 int disk_seek(disk_handle_t*, size_t);
 int disk_write(disk_handle_t*, size_t, size_t, const uint8_t*);
+int disk_write_with_efpak
+(disk_handle_t*, size_t, efpak_istream_t*, size_t, size_t);
 int disk_read(disk_handle_t*, size_t, size_t, uint8_t*);
-int disk_update_with_mem(const uint8_t*, size_t);
-int disk_update_with_zmem(const uint8_t*, size_t);
-int disk_update_with_file(const char*);
+int disk_update_with_efpak(disk_handle_t*, efpak_istream_t*);
 
 
 #endif /* DISK_H_INCLUDED */

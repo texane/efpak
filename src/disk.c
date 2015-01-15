@@ -17,7 +17,7 @@
 #include <linux/fs.h>
 #include <linux/hdreg.h>
 #include "disk.h"
-#include "decomp.h"
+#include "efpak.h" 
 
 
 #ifdef DISK_UNIT
@@ -510,150 +510,10 @@ static int get_mbe_addr
 /* is done, the tool update the disk MBR to point to the new */
 /* partition. This last operation operation acts as a commit. */
 
-typedef struct mem_handle
-{
-  /* common */
-  const uint8_t* data;
-  size_t size;
-  size_t off;
-
-  /* zmem specific */
-  decomp_handle_t decomp;
-  const uint8_t* zmem_data;
-  size_t zmem_size;
-
-  int (*seek)(struct mem_handle*, size_t);
-  int (*next)(struct mem_handle*, const uint8_t**, size_t*);
-  void (*fini)(struct mem_handle*);
-
-} mem_handle_t;
-
-static void mem_init(mem_handle_t* mem, const uint8_t* data, size_t size) 
-{
-  mem->data = data;
-  mem->size = size;
-  mem->off = 0;
-}
-
-static int ram_seek(mem_handle_t* mem, size_t off)
-{
-  if (off > mem->size) return -1;
-  mem->off = off;
-  return 0;
-}
-
-static int ram_next(mem_handle_t* mem, const uint8_t** data, size_t* size)
-{
-  if (*size == (size_t)-1) *size = mem->size - mem->off;
-  if ((mem->off + *size) > mem->size) *size = mem->size - mem->off;
-
-  *data = mem->data + mem->off;
-  mem->off += *size;
-
-  return 0;
-}
-
-static void ram_fini(mem_handle_t* mem)
-{
-}
-
-static int ram_init(mem_handle_t* mem, const uint8_t* data, size_t size)
-{
-  mem_init(mem, data, size);
-  mem->seek = ram_seek;
-  mem->next = ram_next;
-  mem->fini = ram_fini;
-  return 0;
-}
-
-static int zmem_seek(mem_handle_t* mem, size_t off)
-{
-  size_t n;
-
-  if ((mem->off + mem->zmem_size) <= off)
-  {
-    while (1)
-    {
-      mem->off += mem->zmem_size;
-
-      if (decomp_next_oblock(&mem->decomp, &mem->zmem_data, &mem->zmem_size))
-	return -1;
-
-      if (mem->zmem_size == 0)
-	return -1;
-
-      if ((mem->off + mem->zmem_size) > off)
-	break ;
-    }
-  }
-
-  n = off - mem->off;
-  mem->zmem_data += n;
-  mem->zmem_size -= n;
-  mem->off += n;
-
-  return 0;
-}
-
-static int zmem_next(mem_handle_t* mem, const uint8_t** buf, size_t* size)
-{
-  if (mem->zmem_size == 0)
-  {
-    if (decomp_next_oblock(&mem->decomp, &mem->zmem_data, &mem->zmem_size))
-      return -1;
-  }
-
-  /* note: keep both condition for readability */
-  if ((*size == (size_t)-1) || (*size > mem->zmem_size))
-  {
-    *size = mem->zmem_size;
-  }
-
-  *buf = mem->zmem_data;
-
-  mem->off += *size;
-  mem->zmem_data += *size;
-  mem->zmem_size -= *size;
-
-  return 0;
-}
-
-static void zmem_fini(mem_handle_t* mem)
-{
-  decomp_fini(&mem->decomp);
-}
-
-static int zmem_init(mem_handle_t* mem, const uint8_t* data, size_t size)
-{
-  /* ASSUME((oblock_size % DISK_BLOCK_SIZE) == 0) */
-  static const size_t oblock_size = 64 * 1024;
-
-  if (decomp_init(&mem->decomp, oblock_size))
-    goto on_error_0;
-
-  if (decomp_set_single_iblock(&mem->decomp, (void*)data, size))
-    goto on_error_1;
-
-  mem_init(mem, data, size);
-  mem->seek = zmem_seek;
-  mem->next = zmem_next;
-  mem->fini = zmem_fini;
-
-  mem->zmem_data = NULL;
-  mem->zmem_size = 0;
-
-  return 0;
-
- on_error_1:
-  decomp_fini(&mem->decomp);
- on_error_0:
-  return -1;
-}
-
-static int disk_write_with_mem
+int disk_write_with_efpak
 (
  disk_handle_t* disk, size_t doff,
- mem_handle_t* mem, size_t moff,
+ efpak_istream_t* is, size_t moff,
  size_t size
 )
 {
@@ -664,7 +524,7 @@ static int disk_write_with_mem
   size_t i;
   size_t n;
 
-  if (mem->seek(mem, moff * DISK_BLOCK_SIZE))
+  if (efpak_istream_seek(is, moff * DISK_BLOCK_SIZE))
   {
     PERROR();
     return -1;
@@ -675,7 +535,7 @@ static int disk_write_with_mem
     if (size != (size_t)-1) n = (size - i) * DISK_BLOCK_SIZE;
     else n = (size_t)-1;
 
-    if (mem->next(mem, &p, &n))
+    if (efpak_istream_next(is, &p, &n))
     {
       PERROR();
       return -1;
@@ -694,12 +554,11 @@ static int disk_write_with_mem
   return 0;
 }
 
-static int update_with_mem(mem_handle_t* mem)
+static int update_with_efpak(disk_handle_t* disk, efpak_istream_t* is)
 {
   static const size_t max_disk_size = UINT32_MAX / DISK_BLOCK_SIZE;
   static const size_t mbr_size = sizeof(mbr_t) / DISK_BLOCK_SIZE;
 
-  disk_handle_t disk;
   const uint8_t* data;
   int err = -1;
   mbr_t cur_mbr;
@@ -719,7 +578,7 @@ static int update_with_mem(mem_handle_t* mem)
   size_t new_boot_moff;
 
   size = sizeof(mbr_t);
-  if (mem->next(mem, &data, &size))
+  if (efpak_istream_next(is, &data, &size))
   {
     PERROR();
     goto on_error_0;
@@ -738,33 +597,21 @@ static int update_with_mem(mem_handle_t* mem)
     goto on_error_0;
   }
 
-#ifdef DISK_UNIT
-  /* if (disk_open_dev(&disk, "sdd")) */
-  if (disk_open_dev(&disk, "mmcblk0"))
-  /* if (disk_open_root(&disk)) */
-#else
-  if (disk_open_root(&disk))
-#endif
+  /* get disk size, trunc to 4GB. */
+
+  disk_size = disk->block_count;
+  if (disk_size > max_disk_size) disk_size = max_disk_size;
+
+  if (disk_read(disk, 0, mbr_size, (uint8_t*)&cur_mbr))
   {
     PERROR();
     goto on_error_0;
   }
 
-  /* get disk size, trunc to 4GB. */
-
-  disk_size = disk.block_count;
-  if (disk_size > max_disk_size) disk_size = max_disk_size;
-
-  if (disk_read(&disk, 0, mbr_size, (uint8_t*)&cur_mbr))
-  {
-    PERROR();
-    goto on_error_1;
-  }
-
   if (is_mbr_magic(&cur_mbr) == 0)
   {
     PERROR();
-    goto on_error_1;
+    goto on_error_0;
   }
 
   /* find the current active partition (ie. boot) */
@@ -772,7 +619,7 @@ static int update_with_mem(mem_handle_t* mem)
   if (cur_boot_pos == MBR_ENTRY_COUNT)
   {
     PERROR();
-    goto on_error_1;
+    goto on_error_0;
   }
 
   /* find the new active partition (ie. boot) */
@@ -780,27 +627,27 @@ static int update_with_mem(mem_handle_t* mem)
   if (new_boot_pos >= (MBR_ENTRY_COUNT - 1))
   {
     PERROR();
-    goto on_error_1;
+    goto on_error_0;
   }
   new_root_pos = new_boot_pos + 1;
 
   /* get the new boot and root addresses */
 
   if (get_mbe_addr(&new_mbr.entries[new_boot_pos],
-		   disk.chs,
+		   disk->chs,
 		   &new_boot_off, &new_boot_size))
   {
     PERROR();
-    goto on_error_1;
+    goto on_error_0;
   }
   new_boot_moff = new_boot_off;
 
   if (get_mbe_addr(&new_mbr.entries[new_root_pos],
-		   disk.chs,
+		   disk->chs,
 		   &new_root_off, &new_root_size))
   {
     PERROR();
-    goto on_error_1;
+    goto on_error_0;
   }
   new_root_moff = new_root_off;
 
@@ -809,11 +656,11 @@ static int update_with_mem(mem_handle_t* mem)
   /* shifting them of disk_size / 2. */
 
   if (get_mbe_addr(&cur_mbr.entries[cur_boot_pos],
-		   disk.chs,
+		   disk->chs,
 		   &cur_boot_off, &cur_boot_size))
   {
     PERROR();
-    goto on_error_1;
+    goto on_error_0;
   }
 
   if (cur_boot_off < (disk_size / 2))
@@ -825,36 +672,36 @@ static int update_with_mem(mem_handle_t* mem)
   /* rewrite new boot and root entries */
 
   if (set_mbe_addr(&new_mbr.entries[new_boot_pos],
-		   disk.chs,
+		   disk->chs,
 		   new_boot_off, new_boot_size))
   {
     PERROR();
-    goto on_error_1;
+    goto on_error_0;
   }
 
   if (set_mbe_addr(&new_mbr.entries[new_root_pos],
-		   disk.chs,
+		   disk->chs,
 		   new_root_off, new_root_size))
   {
     PERROR();
-    goto on_error_1;
+    goto on_error_0;
   }
 
   /* write new boot and root to disk */
   /* an error or abort wont prevent the system to reboot */
 
-  if (disk_write_with_mem
-      (&disk, new_boot_off, mem, new_boot_moff, new_boot_size))
+  if (disk_write_with_efpak
+      (disk, new_boot_off, is, new_boot_moff, new_boot_size))
   {
     PERROR();
-    goto on_error_1;
+    goto on_error_0;
   }
 
-  if (disk_write_with_mem
-      (&disk, new_root_off, mem, new_root_moff, (size_t)-1))
+  if (disk_write_with_efpak
+      (disk, new_root_off, is, new_root_moff, (size_t)-1))
   {
     PERROR();
-    goto on_error_1;
+    goto on_error_0;
   }
 
 #if 0 /* dance configuration */
@@ -924,120 +771,19 @@ static int update_with_mem(mem_handle_t* mem)
   /* write new mbr, commit the operation */
   /* an error may prevent the system to reboot */
 
-  if (disk_write(&disk, 0, mbr_size, (const uint8_t*)&new_mbr))
-  {
-    PERROR();
-    goto on_error_1;
-  }
-
-  err = 0;
-
- on_error_1:
-  disk_close(&disk);
- on_error_0:
-  return err;
-}
-
-int disk_update_with_file(const char* path)
-{
-  mem_handle_t mem;
-  struct stat st;
-  uint8_t* buf;
-  size_t size;
-  int fd;
-  size_t len;
-  int err = -1;
-
-  fd = open(path, O_RDONLY);
-  if (fd == -1)
+  if (disk_write(disk, 0, mbr_size, (const uint8_t*)&new_mbr))
   {
     PERROR();
     goto on_error_0;
   }
 
-  if (fstat(fd, &st))
-  {
-    PERROR();
-    goto on_error_1;
-  }
+  err = 0;
 
-  size = st.st_size;
-  buf = mmap(NULL, size, PROT_READ, MAP_SHARED, fd, 0);
-  if (buf == (uint8_t*)MAP_FAILED)
-  {
-    PERROR();
-    goto on_error_1;
-  }
-
-  /* detect gzipped file by extension */
-  len = strlen(path);
-  if ((len >= 3) && strcmp(path + len - 3, ".gz") == 0)
-  {
-    err = zmem_init(&mem, buf, size);
-  }
-  else
-  {
-    err = ram_init(&mem, buf, size);
-  }
-
-  if (err)
-  {
-    PERROR();
-    goto on_error_2;
-  }
-  
-  err = update_with_mem(&mem);
-
-  mem.fini(&mem);
-
- on_error_2:
-  munmap(buf, size);
- on_error_1:
-  close(fd);
  on_error_0:
   return err;
 }
 
-int disk_update_with_mem(const uint8_t* buf, size_t size)
+int disk_update_with_efpak(disk_handle_t* disk, efpak_istream_t* is)
 {
-  mem_handle_t mem;
-  int err;
-
-  if (ram_init(&mem, buf, size))
-  {
-    PERROR();
-    return -1;
-  }
-
-  err = update_with_mem(&mem);
-  mem.fini(&mem);
-  return err;
+  return update_with_efpak(disk, is);
 }
-
-int disk_update_with_zmem(const uint8_t* buf, size_t size)
-{
-  /* update the disk with a gzip compressed memory buffer */
-
-  mem_handle_t mem;
-  int err;
-
-  if (zmem_init(&mem, buf, size))
-  {
-    PERROR();
-    return -1;
-  }
-
-  err = update_with_mem(&mem);
-  mem.fini(&mem);
-  return err;
-}
-
-
-#ifdef DISK_UNIT
-
-int main(int ac, char** av)
-{
-  return disk_update_with_file(av[1]);
-}
-
-#endif /* DISK_UNIT */
