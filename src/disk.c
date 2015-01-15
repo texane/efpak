@@ -17,7 +17,7 @@
 #include <linux/fs.h>
 #include <linux/hdreg.h>
 #include "disk.h"
-#include "efpak.h" 
+#include "libefpak.h" 
 
 
 #ifdef DISK_UNIT

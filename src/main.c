@@ -11,7 +11,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
-#include "efpak.h"
+#include "libefpak.h"
 #include "disk.h"
 #ifdef CONFIG_LIBDEEP
 #include "libdeep.h"

@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 #include <sys/types.h>
-#include "efpak.h"
+#include "libefpak.h"
 
 
 typedef struct disk_handle

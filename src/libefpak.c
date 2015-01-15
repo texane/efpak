@@ -12,7 +12,7 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/types.h>
-#include "efpak.h"
+#include "libefpak.h"
 
 
 #if 0
