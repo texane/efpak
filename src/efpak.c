@@ -52,7 +52,6 @@ static int inflate_init
 
   z_stream* const z = &inflate->z;
 
-  if (osize == 0) osize = 8 * 1024;
   inflate->osize = osize;
   inflate->obuf = malloc(osize);
   if (inflate->obuf == NULL)
@@ -301,13 +300,13 @@ static void inflate_mem_fini(efpak_imem_t* mem)
   inflate_fini(&mem->inflate);
 }
 
+/* ASSUME((oblock_size % DISK_BLOCK_SIZE) == 0) */
+static const size_t inflate_oblock_size = 64 * 1024;
+
 static int inflate_mem_init
 (efpak_imem_t* mem, const uint8_t* data, size_t size)
 {
-  /* ASSUME((oblock_size % DISK_BLOCK_SIZE) == 0) */
-  static const size_t oblock_size = 64 * 1024;
-
-  if (inflate_init(&mem->inflate, oblock_size))
+  if (inflate_init(&mem->inflate, inflate_oblock_size))
     goto on_error_0;
 
   if (inflate_set_single_iblock(&mem->inflate, (void*)data, size))
@@ -529,7 +528,7 @@ static int deflate_mem
   z.avail_in = (uInt)isize;
 
   z.next_out = (Bytef*)*odata;
-  z.avail_out = (uInt)*osize;
+  z.avail_out = (uInt)dlen;
 
   z.zalloc = Z_NULL;
   z.zfree = Z_NULL;
@@ -537,8 +536,9 @@ static int deflate_mem
 
   if (deflateInit2Default(&z) != Z_OK) goto on_error_1;
   if (deflate(&z, 0) != Z_OK) goto on_error_2;
+  if (z.avail_in) goto on_error_2;
 
-  *osize = (size_t)dlen;
+  *osize = (size_t)dlen - (size_t)z.avail_out;
   err = 0;
 
  on_error_2:
@@ -560,8 +560,8 @@ static int deflate_file_if_large
 
   if (map_file(path, &idata, isize)) return -1;
 
-  /* compress file larger than 64KB */
-  if (*isize > (64 * 1024))
+  /* compress file larger than inflate_oblock_size */
+  if (*isize > inflate_oblock_size)
   {
     const int err = deflate_mem(idata, *isize, odata, osize);
     unmap_file(idata, *isize);
