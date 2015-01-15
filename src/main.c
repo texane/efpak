@@ -201,12 +201,48 @@ static int do_create(int ac, const char** av)
 
 static int do_add_disk(int ac, const char** av)
 {
-  return -1;
+  const char* const efpak_path = av[2];
+  const char* const disk_path = av[3];
+
+  efpak_ostream_t os;
+  int err = -1;
+
+  if (ac != 4) goto on_error_0;
+  if (efpak_ostream_init_with_file(&os, efpak_path)) goto on_error_0;
+  if (efpak_ostream_add_disk(&os, disk_path)) goto on_error_1;
+  err = 0;
+
+ on_error_1:
+  efpak_ostream_fini(&os);
+ on_error_0:
+  return err;
 }
 
 static int do_add_part(int ac, const char** av)
 {
-  return -1;
+  const char* const efpak_path = av[2];
+  const char* const part_name = av[3];
+  const char* const part_path = av[4];
+
+  efpak_partid_t id;
+  efpak_ostream_t os;
+  int err = -1;
+
+  if (ac != 5) goto on_error_0;
+
+  if (strcmp(part_name, "boot") == 0) id = EFPAK_PARTID_BOOT;
+  else if (strcmp(part_name, "root") == 0) id = EFPAK_PARTID_ROOT;
+  else if (strcmp(part_name, "app") == 0) id = EFPAK_PARTID_APP;
+  else goto on_error_0;
+
+  if (efpak_ostream_init_with_file(&os, efpak_path)) goto on_error_0;
+  if (efpak_ostream_add_part(&os, part_path, id)) goto on_error_1;
+  err = 0;
+
+ on_error_1:
+  efpak_ostream_fini(&os);
+ on_error_0:
+  return err;
 }
 
 static int do_add_file(int ac, const char** av)
