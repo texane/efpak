@@ -265,19 +265,80 @@ static int do_add_file(int ac, const char** av)
   return err;
 }
 
-static int do_get_disk(int ac, const char** av)
+static int do_extract(int ac, const char** av)
 {
-  return -1;
-}
+  const char* const efpak_path = av[2];
+  const char* const dir_path = av[3];
 
-static int do_get_part(int ac, const char** av)
-{
-  return -1;
-}
+  char full_path[256];
+  const efpak_header_t* h;
+  efpak_istream_t is;
+  int err = -1;
+  int fd;
+  unsigned int n = 0;
+  size_t size;
+  const uint8_t* data;
 
-static int do_get_file(int ac, const char** av)
-{
-  return -1;
+  if (ac != 4) goto on_error_0;
+
+  errno = 0;
+  if (mkdir(dir_path, 0755))
+  {
+    if (errno != EEXIST) goto on_error_0;
+  }
+
+  if (efpak_istream_init_with_file(&is, efpak_path)) goto on_error_0;
+
+  while (1)
+  {
+    if (efpak_istream_next_block(&is, &h)) goto on_error_1;
+    if (h == NULL) break ;
+    if (h->type == EFPAK_BTYPE_FORMAT) continue ;
+
+    /* create the file */
+    snprintf(full_path, sizeof(full_path), "%s/%04x", dir_path, n++);
+    full_path[sizeof(full_path) - 1] = 0;
+    fd = open(full_path, O_RDWR | O_TRUNC | O_CREAT, 0755);
+    if (fd == -1) goto on_error_1;
+
+    /* extract the block */
+    if (efpak_istream_start_block(&is))
+    {
+      close(fd);
+      goto on_error_1;
+    }
+
+    while (1)
+    {
+      size = (size_t)-1;
+      if (efpak_istream_next(&is, &data, &size))
+      {
+	close(fd);
+	goto on_error_1;
+      }
+
+      if (size == 0) break ;
+
+      if (write(fd, data, size) != (ssize_t)size)
+      {
+	close(fd);
+	goto on_error_1;
+      }
+    }
+
+    printf("ok: %u\n", n - 1);
+
+    close(fd);
+
+    efpak_istream_end_block(&is);
+  }
+
+  err = 0;
+
+ on_error_1:
+  efpak_istream_fini(&is);
+ on_error_0:
+  return err;
 }
 
 static int do_update_disk(int ac, const char** av)
@@ -300,9 +361,7 @@ static int do_help(int ac, const char** av)
     " efpak add_file efpak_path \n"
     "\n"
     ". extracting contents: \n"
-    " efpak get_disk efpak_path disk_path \n"
-    " efpak get_part efpak_path {boot,root,app} part_path \n"
-    " efpak get_file efpak_path file_name file_path \n"
+    " efpak extract efpak_path dest_dir \n"
     "\n"
     ". disk update: \n"
     " efpak update_disk efpak_path {root,disk_path} \n"
@@ -326,9 +385,7 @@ int main(int ac, const char** av)
     { "add_disk", do_add_disk },
     { "add_part", do_add_part },
     { "add_file", do_add_file },
-    { "get_disk", do_get_disk },
-    { "get_part", do_get_part },
-    { "get_file", do_get_file },
+    { "extract", do_extract },
     { "update_disk", do_update_disk },
     { "help", do_help }
   };
