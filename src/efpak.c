@@ -15,7 +15,7 @@
 #include "efpak.h"
 
 
-#ifdef EFPAK_UNIT
+#if 0
 #include <stdio.h>
 #define PERROR()			\
 do {					\
@@ -484,6 +484,7 @@ void efpak_istream_end_block
   /* ASSUME: is->is_in_block == 1 */
 
   is->mem.fini(&is->mem);
+  is->is_in_block = 0;
 }
 
 int efpak_istream_seek
