@@ -274,12 +274,15 @@ static int do_update_disk(int ac, const char** av)
 
   if (efpak_istream_init_with_file(&is, efpak_path)) goto on_error_0;
 
+  h = NULL;
   while (1)
   {
     if (efpak_istream_next_block(&is, &h)) goto on_error_1;
     if (h == NULL) break ;
     if (h->type == EFPAK_BTYPE_DISK) break ;
   }
+
+  if (h == NULL) goto on_error_1;
 
   if (efpak_istream_start_block(&is)) goto on_error_1;
 
@@ -315,12 +318,15 @@ static int do_write_disk(int ac, const char** av)
 
   if (efpak_istream_init_with_file(&is, efpak_path)) goto on_error_0;
 
+  h = NULL;
   while (1)
   {
     if (efpak_istream_next_block(&is, &h)) goto on_error_1;
     if (h == NULL) break ;
     if (h->type == EFPAK_BTYPE_DISK) break ;
   }
+
+  if (h == NULL) goto on_error_1;
 
   if (efpak_istream_start_block(&is)) goto on_error_1;
 
