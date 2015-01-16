@@ -1,1 +1,21 @@
 efpak: embedded firmware packaging
+
+EFPAK (embedded firmware package) packages contain data that are parts
+of device firmware upgrade operations. The EFPAK format packages data
+blocks in a single container. Data can be of various type:
+. EFPAK format related information,
+. regular files to be stored in a filesystem,
+. individual disk partition of full disk images.
+
+The format itself is close to the ZIP format, and favor rapid iteration
+over individual data blocks, and allows for an efficient implementation
+in memory constraint environments. Also, data larger than 4GB can be handled.
+
+Individual data blocks can be compressed. Currently, the DEFLATE compression
+algorithm is used.
+
+A tool called efpak allows to manage packages. Available commands include:
+. creation of a package,
+. package information,
+. addition and extraction of contents,
+. send the package to a device.
