@@ -26,7 +26,7 @@ do {					\
 } while (0)
 
 
-static int do_list_headers(int ac, const char** av)
+static int do_list(int ac, const char** av)
 {
   const char* const path = av[2];
   efpak_istream_t is;
@@ -349,10 +349,10 @@ static int do_send(int ac, const char** av)
 static int do_help(int ac, const char** av)
 {
   const char* const usage =
-    ". package info: \n"
-    " efpak list_headers \n"
+    ". list package contents: \n"
+    " efpak list \n"
     "\n"
-    ". package creation: \n"
+    ". create a new package: \n"
     " efpak create efpak_path \n"
     "\n"
     ". adding contents: \n"
@@ -383,7 +383,7 @@ int main(int ac, const char** av)
     int (*fn)(int, const char**);
   } ops[] =
   {
-    { "list_headers", do_list_headers },
+    { "list", do_list },
     { "create", do_create },
     { "add_disk", do_add_disk },
     { "add_part", do_add_part },
