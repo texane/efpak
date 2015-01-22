@@ -20,7 +20,8 @@
 #include "libefpak.h" 
 
 
-#ifdef DISK_UNIT
+/* #ifdef DISK_UNIT */
+#if 1
 #include <stdio.h>
 #define PERROR()			\
 do {					\
@@ -552,7 +553,7 @@ typedef struct install_handle
   size_t area_size[3];
 
   /* partition index in mbr */
-  size_t part_index[3];
+  size_t mbr_index[3];
 
   /* partition offset and size in sectors */
   size_t part_off[3];
@@ -600,7 +601,7 @@ static int install_get_part_layout(install_handle_t* inst)
   {
     const mbe_t* const mbe = &inst->mbr.entries[boot_index + i];
 
-    inst->part_index[i] = boot_index + i;
+    inst->mbr_index[i] = boot_index + i;
 
     if (is_mbe_valid(mbe) == 0)
     {
@@ -696,7 +697,7 @@ static int install_part(install_handle_t* inst)
 
   /* update mbr */
 
-  mbe = &inst->mbr.entries[inst->part_index[i]];
+  mbe = &inst->mbr.entries[inst->mbr_index[i]];
   set_mbe_addr(mbe, inst->disk->chs, off, size);
 
   /* TODO: remount /new_xx with new partition */
@@ -775,7 +776,7 @@ static int install_disk(install_handle_t* inst)
 
   for (i = 0; i != 3; ++i)
   {
-    mbe_t* const mbe = &inst->mbr.entries[inst->part_index[i]];
+    mbe_t* const mbe = &inst->mbr.entries[inst->mbr_index[i]];
 
     if (inst->part_size[i] == 0) continue ;
 
@@ -791,7 +792,7 @@ static int install_disk(install_handle_t* inst)
       goto on_error;
     }
 
-    set_mbe_addr(mbe, inst->disk->chs, inst->part_off[i], inst->part_size[i]);
+    set_mbe_addr(mbe, inst->disk->chs, inst->area_off[i], inst->part_size[i]);
   }
 
   return 0;
@@ -826,6 +827,11 @@ static int install_efpak(install_handle_t* inst)
 
     switch (inst->h->type)
     {
+    case EFPAK_BTYPE_FORMAT:
+      {
+	break ;
+      }
+
     case EFPAK_BTYPE_DISK:
       {
 	err = install_disk(inst);
