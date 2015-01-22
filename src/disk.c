@@ -396,6 +396,11 @@ static unsigned int is_mbr_magic(const mbr_t* mbr)
   return (magic[0] == MBR_MAGIC_00) && (magic[1] == MBR_MAGIC_01);
 }
 
+static unsigned int is_mbe_valid(const mbe_t* e)
+{
+  return (e->type == 0x0c) || (e->type == 0x83);
+}
+
 static unsigned int is_mbe_active(const mbe_t* e)
 {
   return e->status & (1 << 7);
@@ -468,7 +473,7 @@ static void lba_to_chs
   chs[2] = (uint8_t)c;
 }
 
-static int set_mbe_addr
+static void set_mbe_addr
 (mbe_t* e, const size_t* chs, size_t off, size_t size)
 {
   /* off and size in sectors */
@@ -478,11 +483,9 @@ static int set_mbe_addr
 
   put_uint32_le((uint8_t*)&e->first_lba, (uint32_t)off);
   put_uint32_le((uint8_t*)&e->sector_count, (uint32_t)size);
-
-  return 0;
 }
 
-static int get_mbe_addr
+static void get_mbe_addr
 (const mbe_t* e, const size_t* chs, size_t* off, size_t* size)
 {
   /* off and size in sectors */
@@ -496,41 +499,19 @@ static int get_mbe_addr
   *off = (size_t)get_uint32_le((const uint8_t*)&e->first_lba);
   *size = (size_t)get_uint32_le((const uint8_t*)&e->sector_count);
 #endif
-
-  return 0;
 }
 
 
 /* disk update routines */
-/* To increase the operation safety, a partition pivoting scheme */
-/* is used: the whole disk is logically seen as 2 blocks of same */
-/* size. At a current time, only one of these 2 blocks is used */
-/* to store the system. When a disk update is requested, the tool */
-/* selects the unused block and write the new image on it. once it */
-/* is done, the tool update the disk MBR to point to the new */
-/* partition. This last operation operation acts as a commit. */
 
-int disk_write_with_efpak
-(
- disk_handle_t* disk, size_t doff,
- efpak_istream_t* is, size_t moff,
- size_t size
-)
+static int write_with_efpak
+(disk_handle_t* disk, efpak_istream_t* is, size_t off, size_t size)
 {
-  /* doff the disk offset, in disk block units */
-  /* doff the memory offset, in disk block units */
-
   const uint8_t* p;
   size_t i;
   size_t n;
 
-  if (efpak_istream_seek(is, moff * DISK_BLOCK_SIZE))
-  {
-    PERROR();
-    return -1;
-  }
-
-  for (i = 0; i != size; i += n, doff += n)
+  for (i = 0; i != size; i += n, off += n)
   {
     if (size != (size_t)-1) n = (size - i) * DISK_BLOCK_SIZE;
     else n = (size_t)-1;
@@ -544,7 +525,7 @@ int disk_write_with_efpak
     if (n == 0) break ;
 
     n /= DISK_BLOCK_SIZE;
-    if (disk_write(disk, doff, n, p))
+    if (disk_write(disk, off, n, p))
     {
       PERROR();
       return -1;
@@ -554,236 +535,354 @@ int disk_write_with_efpak
   return 0;
 }
 
-static int update_with_efpak(disk_handle_t* disk, efpak_istream_t* is)
+typedef struct install_handle
 {
-  static const size_t max_disk_size = UINT32_MAX / DISK_BLOCK_SIZE;
-  static const size_t mbr_size = sizeof(mbr_t) / DISK_BLOCK_SIZE;
+  efpak_istream_t* is;
+  disk_handle_t* disk;
+  const efpak_header_t* h;
 
-  const uint8_t* data;
-  int err = -1;
-  mbr_t cur_mbr;
-  mbr_t new_mbr;
-  size_t size;
+#define INSTALL_FLAG_MBR (1 << 0)
+#define INSTALL_FLAG_LAY (1 << 1)
+  uint32_t flags;
+
+  mbr_t mbr;
+
+  /* area offset and size in sectors */
+  size_t area_off[3];
+  size_t area_size[3];
+
+  /* partition index in mbr */
+  size_t part_index[3];
+
+  /* partition offset and size in sectors */
+  size_t part_off[3];
+  size_t part_size[3];
+
+} install_handle_t;
+
+static int install_init
+(install_handle_t* inst, disk_handle_t* disk, efpak_istream_t* is)
+{
+  inst->disk = disk;
+  inst->is = is;
+  inst->flags = 0;
+  return 0;
+}
+
+static int install_get_part_layout(install_handle_t* inst)
+{
+  /* get the current partitioning layout */
+
+  const size_t max_disk_size = UINT32_MAX / DISK_BLOCK_SIZE;
+  const size_t boot_size = (2 * 256 * 1024 * 1024) / DISK_BLOCK_SIZE;
+  const size_t root_size = (2 * 512 * 1024 * 1024) / DISK_BLOCK_SIZE;
+  const size_t app_size = (2 * 512 * 1024 * 1024) / DISK_BLOCK_SIZE;
+
   size_t disk_size;
-  size_t cur_boot_pos;
-  size_t new_boot_pos;
-  size_t new_root_pos;
-  size_t cur_boot_off;
-  size_t cur_boot_size;
-  size_t new_boot_off;
-  size_t new_boot_size;
-  size_t new_root_off;
-  size_t new_root_size;
-  size_t new_root_moff;
-  size_t new_boot_moff;
+  size_t boot_index;
+  size_t i;
+
+  /* already got */
+  if (inst->flags & INSTALL_FLAG_LAY) goto on_success;
+  inst->flags |= INSTALL_FLAG_LAY;
+
+  /* get disk size, trunc to 4GB. */
+  disk_size = inst->disk->block_count;
+  if (disk_size > max_disk_size) disk_size = max_disk_size;
+
+  /* find boot partition. deduce root and app info. */
+
+  boot_index = find_active_mbe(&inst->mbr);
+  /* if (boot_index == MBR_ENTRY_COUNT) return -1; */
+  if (boot_index > 1) goto on_error;
+
+  for (i = 0; i != 3; ++i)
+  {
+    const mbe_t* const mbe = &inst->mbr.entries[boot_index + i];
+
+    inst->part_index[i] = boot_index + i;
+
+    if (is_mbe_valid(mbe) == 0)
+    {
+      inst->part_size[i] = 0;
+      continue ;
+    }
+
+    get_mbe_addr(mbe, inst->disk->chs, &inst->part_off[i], &inst->part_size[i]);
+  }
+
+  /* area bases and sizes */
+  /* refer to firmware disk documentation */
+  inst->area_off[0] = inst->part_off[0];
+  inst->area_size[0] = boot_size;
+  inst->area_off[1] = inst->area_off[0] + boot_size;
+  inst->area_size[1] = root_size;
+  inst->area_off[2] = inst->area_off[1] + root_size;
+  inst->area_size[2] = app_size;
+  if ((inst->area_off[2] + inst->area_size[2]) > disk_size) goto on_error;
+
+ on_success:
+  return 0;
+
+ on_error:
+  return -1;
+}
+
+static int install_part(install_handle_t* inst)
+{
+  static const size_t mbr_nblk = sizeof(mbr_t) / DISK_BLOCK_SIZE;
+
+  disk_handle_t* const disk = inst->disk;
+  efpak_istream_t* const is = inst->is;
+  const efpak_header_t* const h = inst->h;
+  size_t i;
+  size_t off;
+  size_t size;
+  mbe_t* mbe;
+
+  if ((inst->flags & INSTALL_FLAG_MBR) == 0)
+  {
+    inst->flags |= INSTALL_FLAG_MBR;
+
+    /* get mbr from disk */
+
+    if (disk_read(inst->disk, 0, mbr_nblk, (uint8_t*)&inst->mbr))
+    {
+      PERROR();
+      goto on_error;
+    }
+
+    if (!is_mbr_magic(&inst->mbr))
+    {
+      PERROR();
+      goto on_error;
+    }
+
+    if (install_get_part_layout(inst))
+    {
+      PERROR();
+      goto on_error;
+    }
+  }
+
+  /* get partition new layout, ie. where to store in area */
+
+  switch ((efpak_partid_t)inst->h->u.part.id)
+  {
+  case EFPAK_PARTID_BOOT: i = 0; break ;
+  case EFPAK_PARTID_ROOT: i = 1; break ;
+  case EFPAK_PARTID_APP: i = 2; break ;
+  default: goto on_error; break ;
+  }
+
+  off = inst->area_off[i];
+  if (off == inst->part_off[i]) off += inst->area_size[i] / 2;
+
+  /* check uncompressed size wont overwrite next area */
+
+  if (h->raw_data_size > (uint64_t)UINT32_MAX - DISK_BLOCK_SIZE) goto on_error;
+  size = (size_t)inst->h->raw_data_size;
+  if (size % DISK_BLOCK_SIZE) size += DISK_BLOCK_SIZE;
+  size /= DISK_BLOCK_SIZE;
+  if ((off + size) > (inst->area_off[i] + inst->area_size[i])) goto on_error;
+
+  /* write the new partition contents */
+
+  if (write_with_efpak(disk, is, off, (size_t)-1))
+  {
+    PERROR();
+    goto on_error;
+  }
+
+  /* update mbr */
+
+  mbe = &inst->mbr.entries[inst->part_index[i]];
+  set_mbe_addr(mbe, inst->disk->chs, off, size);
+
+  /* TODO: remount /new_xx with new partition */
+
+  return 0;
+
+ on_error:
+  return -1;
+}
+
+static int install_disk(install_handle_t* inst)
+{
+  disk_handle_t* const disk = inst->disk;
+  efpak_istream_t* const is = inst->is;
+  const uint8_t* data;
+  size_t size;
+  size_t i;
+
+  /* it is invalid to install a disk twice, or with a partion */
+  if (inst->flags & INSTALL_FLAG_MBR)
+  {
+    PERROR();
+    goto on_error;
+  }
+
+  inst->flags |= INSTALL_FLAG_MBR;
+
+  /* get mbr from new disk image */
 
   size = sizeof(mbr_t);
   if (efpak_istream_next(is, &data, &size))
   {
     PERROR();
-    goto on_error_0;
+    goto on_error;
   }
+
   if (size != sizeof(mbr_t))
   {
     PERROR();
-    goto on_error_0;
+    goto on_error;
   }
 
-  memcpy(&new_mbr, data, sizeof(mbr_t));
-
-  if (is_mbr_magic(&new_mbr) == 0)
+  if (!is_mbr_magic((const mbr_t*)data))
   {
     PERROR();
-    goto on_error_0;
+    goto on_error;
   }
 
-  /* get disk size, trunc to 4GB. */
+  memcpy(&inst->mbr, data, sizeof(mbr_t));
 
-  disk_size = disk->block_count;
-  if (disk_size > max_disk_size) disk_size = max_disk_size;
-
-  if (disk_read(disk, 0, mbr_size, (uint8_t*)&cur_mbr))
+  if (install_get_part_layout(inst))
   {
     PERROR();
-    goto on_error_0;
+    goto on_error;
   }
 
-  if (is_mbr_magic(&cur_mbr) == 0)
+  /* install empty partition, as may be needed by grub */
+  /* empty partition starts from mbr end to boot */
+
+  if (inst->part_off[0] != 1)
   {
-    PERROR();
-    goto on_error_0;
-  }
-
-  /* find the current active partition (ie. boot) */
-  cur_boot_pos = find_active_mbe(&cur_mbr);
-  if (cur_boot_pos == MBR_ENTRY_COUNT)
-  {
-    PERROR();
-    goto on_error_0;
-  }
-
-  /* find the new active partition (ie. boot) */
-  new_boot_pos = find_active_mbe(&new_mbr);
-  if (new_boot_pos >= (MBR_ENTRY_COUNT - 1))
-  {
-    PERROR();
-    goto on_error_0;
-  }
-  new_root_pos = new_boot_pos + 1;
-
-  /* get the new boot and root addresses */
-
-  if (get_mbe_addr(&new_mbr.entries[new_boot_pos],
-		   disk->chs,
-		   &new_boot_off, &new_boot_size))
-  {
-    PERROR();
-    goto on_error_0;
-  }
-  new_boot_moff = new_boot_off;
-
-  if (get_mbe_addr(&new_mbr.entries[new_root_pos],
-		   disk->chs,
-		   &new_root_off, &new_root_size))
-  {
-    PERROR();
-    goto on_error_0;
-  }
-  new_root_moff = new_root_off;
-
-  /* if the current boot offset is less than disk_size / 2 */
-  /* then use the second disk area for new partitions by */
-  /* shifting them of disk_size / 2. */
-
-  if (get_mbe_addr(&cur_mbr.entries[cur_boot_pos],
-		   disk->chs,
-		   &cur_boot_off, &cur_boot_size))
-  {
-    PERROR();
-    goto on_error_0;
-  }
-
-  if (cur_boot_off < (disk_size / 2))
-  {
-    new_boot_off += disk_size / 2;
-    new_root_off += disk_size / 2;
-  }
-
-  /* rewrite new boot and root entries */
-
-  if (set_mbe_addr(&new_mbr.entries[new_boot_pos],
-		   disk->chs,
-		   new_boot_off, new_boot_size))
-  {
-    PERROR();
-    goto on_error_0;
-  }
-
-  if (set_mbe_addr(&new_mbr.entries[new_root_pos],
-		   disk->chs,
-		   new_root_off, new_root_size))
-  {
-    PERROR();
-    goto on_error_0;
-  }
-
-  /* write new boot and root to disk */
-  /* an error or abort wont prevent the system to reboot */
-
-  if (disk_write_with_efpak
-      (disk, new_boot_off, is, new_boot_moff, new_boot_size))
-  {
-    PERROR();
-    goto on_error_0;
-  }
-
-  if (disk_write_with_efpak
-      (disk, new_root_off, is, new_root_moff, (size_t)-1))
-  {
-    PERROR();
-    goto on_error_0;
-  }
-
-#if 0 /* dance configuration */
-  /* copy dance configuration */
-  /* keep it centralized here */
-  /* TODO: share conf_header_t with conf.h */
-  /* TODO: more checks */
-  {
-    uint8_t* conf_buf;
-    uint8_t one_block[DISK_BLOCK_SIZE];
-    size_t cur_conf_off;
-    size_t new_conf_off;
-    size_t cur_root_off;
-    size_t cur_root_size;
-    size_t conf_size;
-    int conf_err = -1;
-
-    get_mbe_addr(&cur_mbr.entries[cur_boot_pos + 1],
-		 disk.chs,
-		 &cur_root_off, &cur_root_size);
-
-    cur_conf_off = cur_root_off + cur_root_size;
-    if (disk_read(&disk, cur_conf_off, 1, one_block))
-    {
-      conf_err = 0;
-      goto on_conf_error_0;
-    }
-
-    if (is_conf_magic((const conf_header_t*)one_block) == 0)
-    {
-      conf_err = 0;
-      goto on_conf_error_0;
-    }
-
-    conf_size = get_conf_size((const conf_header_t*)one_block);
-    if (conf_size % DISK_BLOCK_SIZE) conf_size += DISK_BLOCK_SIZE;
-    conf_size /= DISK_BLOCK_SIZE;
-    conf_buf = malloc(conf_size * DISK_BLOCK_SIZE);
-    if (conf_buf == NULL)
+    if (efpak_istream_seek(is, DISK_BLOCK_SIZE))
     {
       PERROR();
-      goto on_conf_error_0;
+      goto on_error;
     }
-  
-    if (disk_read(&disk, cur_conf_off, conf_size, conf_buf))
+
+    if (write_with_efpak(disk, is, 1, inst->part_off[0] - 1))
     {
       PERROR();
-      goto on_conf_error_1;
+      goto on_error;
     }
-
-    new_conf_off = new_root_off + new_root_size;
-    if (disk_write(&disk, new_conf_off, conf_size, conf_buf))
-    {
-      PERROR();
-      goto on_conf_error_1;
-    }
-
-    conf_err = 0;
-
-  on_conf_error_1:
-    free(conf_buf);
-  on_conf_error_0:
-    if (conf_err) goto on_error_1;
   }
-#endif /* copy dance configuration */
 
-  /* write new mbr, commit the operation */
-  /* an error may prevent the system to reboot */
+  /* install boot, root and app partitions */
 
-  if (disk_write(disk, 0, mbr_size, (const uint8_t*)&new_mbr))
+  for (i = 0; i != 3; ++i)
   {
-    PERROR();
-    goto on_error_0;
+    mbe_t* const mbe = &inst->mbr.entries[inst->part_index[i]];
+
+    if (inst->part_size[i] == 0) continue ;
+
+    if (efpak_istream_seek(is, inst->part_off[i] * DISK_BLOCK_SIZE))
+    {
+      PERROR();
+      goto on_error;
+    }
+
+    if (write_with_efpak(disk, is, inst->area_off[i], inst->part_size[i]))
+    {
+      PERROR();
+      goto on_error;
+    }
+
+    set_mbe_addr(mbe, inst->disk->chs, inst->part_off[i], inst->part_size[i]);
+  }
+
+  return 0;
+
+ on_error:
+  return -1;
+}
+
+static int install_file(install_handle_t* inst)
+{
+  /* TODO */
+  return -1;
+}
+
+static int install_efpak(install_handle_t* inst)
+{
+  /* to increase safety, the mbr is updated only */
+  /* if all the previous operations succeeded */
+
+  static const size_t mbr_nblk = sizeof(mbr_t) / DISK_BLOCK_SIZE;
+  int err;
+
+  while (1)
+  {
+    err = efpak_istream_next_block(inst->is, &inst->h);
+    if (err) goto on_error;
+
+    if (inst->h == NULL) break ;
+
+    err = efpak_istream_start_block(inst->is);
+    if (err) goto on_error;
+
+    switch (inst->h->type)
+    {
+    case EFPAK_BTYPE_DISK:
+      {
+	err = install_disk(inst);
+	break ;
+      }
+
+    case EFPAK_BTYPE_PART:
+      {
+	err = install_part(inst);
+	break ;
+      }
+
+    case EFPAK_BTYPE_FILE:
+      {
+	err = install_file(inst);
+	break ;
+      }
+
+    default:
+      {
+	err = -1;
+	break ;
+      }
+    }
+
+    efpak_istream_end_block(inst->is);
+
+    if (err)
+    {
+      PERROR();
+      goto on_error;
+    }
+  }
+
+  /* reset error */
+  err = -1;
+
+  if (inst->flags & INSTALL_FLAG_MBR)
+  {
+    /* commit the mbr */
+
+    if (disk_write(inst->disk, 0, mbr_nblk, (const uint8_t*)&inst->mbr))
+    {
+      PERROR();
+      goto on_error;
+    }
   }
 
   err = 0;
 
- on_error_0:
+ on_error:
   return err;
 }
 
-int disk_update_with_efpak(disk_handle_t* disk, efpak_istream_t* is)
+int disk_install_with_efpak(disk_handle_t* disk, efpak_istream_t* is)
 {
-  return update_with_efpak(disk, is);
+  install_handle_t inst;
+  install_init(&inst, disk, is);
+  return install_efpak(&inst);
 }
