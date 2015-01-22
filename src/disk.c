@@ -692,11 +692,20 @@ static int install_part(install_handle_t* inst)
 
   /* check uncompressed size wont overwrite next area */
 
-  if (h->raw_data_size > (uint64_t)UINT32_MAX - DISK_BLOCK_SIZE) goto on_error;
+  if (h->raw_data_size > ((uint64_t)UINT32_MAX - DISK_BLOCK_SIZE))
+  {
+    PERROR();
+    goto on_error;
+  }
+
   size = (size_t)inst->h->raw_data_size;
   if (size % DISK_BLOCK_SIZE) size += DISK_BLOCK_SIZE;
   size /= DISK_BLOCK_SIZE;
-  if ((off + size) > (inst->area_off[i] + inst->area_size[i])) goto on_error;
+  if ((off + size) > (inst->area_off[i] + inst->area_size[i]))
+  {
+    PERROR();
+    goto on_error;
+  }
 
   /* write the new partition contents */
 

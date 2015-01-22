@@ -11,6 +11,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <dirent.h>
 #include "libefpak.h"
 #include "disk.h"
 #ifdef CONFIG_LIBDEEP
@@ -32,17 +33,18 @@ static int do_list(int ac, const char** av)
   efpak_istream_t is;
   const efpak_header_t* h;
   int err = -1;
+  size_t i;
 
   if (ac != 3) goto on_error_0;
 
   if (efpak_istream_init_with_file(&is, path)) goto on_error_0;
 
-  while (1)
+  for (i = 0; 1; ++i)
   {
     if (efpak_istream_next_block(&is, &h)) goto on_error_1;
     if (h == NULL) break ;
 
-    printf("header:\n");
+    printf("header[%zu]:\n", i);
     printf(".vers          : 0x%02x\n", h->vers);
     printf(".type          : 0x%02x\n", h->type);
     printf(".comp          : 0x%02x\n", h->comp);
@@ -179,6 +181,176 @@ static int do_add_file(int ac, const char** av)
   if (ac != 5) goto on_error_0;
   if (efpak_ostream_init_with_file(&os, efpak_path)) goto on_error_0;
   if (efpak_ostream_add_file(&os, src_path, dst_path)) goto on_error_1;
+  err = 0;
+
+ on_error_1:
+  efpak_ostream_fini(&os);
+ on_error_0:
+  return err;
+}
+
+typedef struct
+{
+  efpak_ostream_t* os;
+
+  /* source path */
+  size_t spath_size;
+  size_t spath_pos;
+  char* spath_buf;
+
+  /* destination path */
+  size_t dpath_size;
+  size_t dpath_pos;
+  char* dpath_buf;
+
+} add_dir_t;
+
+static int add_dir_rec(add_dir_t* ad)
+{
+  DIR* dir;
+  struct dirent de;
+  struct dirent* dep;
+  struct stat st;
+  int err = -1;
+  size_t i;
+
+  if ((ad->spath_pos + 1) >= ad->spath_size)
+  {
+    PERROR();
+    goto on_error_0;
+  }
+  ad->spath_buf[ad->spath_pos++] = '/';
+  ad->spath_buf[ad->spath_pos] = 0;
+
+  if ((ad->dpath_pos + 1) >= ad->dpath_size)
+  {
+    PERROR();
+    goto on_error_0;
+  }
+  ad->dpath_buf[ad->dpath_pos++] = '/';
+  ad->dpath_buf[ad->dpath_pos] = 0;
+
+  dir = opendir(ad->spath_buf);
+  if (dir == NULL)
+  {
+    PERROR();
+    goto on_error_0;
+  }
+
+  while (1)
+  {
+    if (readdir_r(dir, &de, &dep))
+    {
+      PERROR();
+      goto on_error_1;
+    }
+
+    if (dep == NULL) break ;
+
+    if (strcmp(de.d_name, ".") == 0) continue ;
+    if (strcmp(de.d_name, "..") == 0) continue ;
+
+    for (i = 0; 1; ++i)
+    {
+      if (i == sizeof(de.d_name))
+      {
+	PERROR();
+	goto on_error_1;
+      }
+
+      if ((ad->spath_pos + i) == ad->spath_size)
+      {
+	PERROR();
+	goto on_error_1;
+      }
+
+      if ((ad->dpath_pos + i) == ad->dpath_size)
+      {
+	PERROR();
+	goto on_error_1;
+      }
+
+      ad->spath_buf[ad->spath_pos + i] = dep->d_name[i];
+      ad->dpath_buf[ad->dpath_pos + i] = dep->d_name[i];
+
+      if (dep->d_name[i] == 0) break ;
+    }
+
+    ad->spath_pos += i;
+    ad->dpath_pos += i;
+
+    if (stat(ad->spath_buf, &st))
+    {
+      PERROR();
+      goto on_error_1;
+    }
+
+    if (S_ISREG(st.st_mode))
+    {
+      printf("adding %s, %s\n", ad->spath_buf, ad->dpath_buf);
+
+      if (efpak_ostream_add_file(ad->os, ad->spath_buf, ad->dpath_buf))
+      {
+	PERROR();
+	goto on_error_1;
+      }
+    }
+    else if (S_ISDIR(st.st_mode))
+    {
+      if (add_dir_rec(ad))
+      {
+	PERROR();
+	goto on_error_1;
+      }
+    }
+
+    ad->spath_pos -= i;
+    ad->dpath_pos -= i;
+  }
+
+  ad->spath_pos -= 1;
+  ad->dpath_pos -= 1;
+
+  err = 0;
+
+ on_error_1:
+  closedir(dir);
+ on_error_0:
+  return err;
+}
+
+static int do_add_dir(int ac, const char** av)
+{
+  const char* const efpak_path = av[2];
+  const char* const src_path = av[3];
+  const char* const dst_path = av[4];
+
+  add_dir_t ad;
+  efpak_ostream_t os;
+  char spath_buf[512];
+  char dpath_buf[512];
+  int err = -1;
+
+  if (ac != 5) goto on_error_0;
+  if (efpak_ostream_init_with_file(&os, efpak_path)) goto on_error_0;
+
+  ad.os = &os;
+
+  ad.spath_size = sizeof(spath_buf);
+  ad.spath_pos = strlen(src_path);
+  if (ad.spath_pos >= ad.spath_size) goto on_error_1;
+  memcpy(spath_buf, src_path, ad.spath_pos);
+  spath_buf[ad.spath_pos] = 0;
+  ad.spath_buf = spath_buf;
+
+  ad.dpath_size = sizeof(dpath_buf);
+  ad.dpath_pos = strlen(dst_path);
+  if (ad.dpath_pos >= ad.dpath_size) goto on_error_1;
+  memcpy(dpath_buf, dst_path, ad.dpath_pos);
+  ad.dpath_buf = dpath_buf;
+
+  if (add_dir_rec(&ad)) goto on_error_1;
+
   err = 0;
 
  on_error_1:
@@ -358,7 +530,8 @@ static int do_help(int ac, const char** av)
     ". adding contents: \n"
     " efpak add_disk efpak_path disk_path \n"
     " efpak add_part efpak_path {boot,root,app} part_path \n"
-    " efpak add_file efpak_path \n"
+    " efpak add_file efpak_path file \n"
+    " efpak add_dir efpak_path dir \n"
     "\n"
     ". extracting contents: \n"
     " efpak extract efpak_path dest_dir \n"
@@ -388,6 +561,7 @@ int main(int ac, const char** av)
     { "add_disk", do_add_disk },
     { "add_part", do_add_part },
     { "add_file", do_add_file },
+    { "add_dir", do_add_dir },
     { "extract", do_extract },
     { "install", do_install },
     { "send", do_send },
