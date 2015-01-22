@@ -516,7 +516,7 @@ static void get_mbe_addr
 
 /* disk update routines */
 
-static int write_with_efpak
+static int disk_write_with_efpak
 (disk_handle_t* disk, efpak_istream_t* is, size_t off, size_t size)
 {
   const uint8_t* p;
@@ -538,6 +538,36 @@ static int write_with_efpak
 
     n /= DISK_BLOCK_SIZE;
     if (disk_write(disk, off, n, p))
+    {
+      PERROR();
+      return -1;
+    }
+  }
+
+  return 0;
+}
+
+static int file_write_with_efpak
+(int fd, efpak_istream_t* is, size_t size)
+{
+  const uint8_t* p;
+  size_t i;
+  size_t n;
+
+  for (i = 0; i != size; i += n)
+  {
+    if (size != (size_t)-1) n = size - i;
+    else n = (size_t)-1;
+
+    if (efpak_istream_next(is, &p, &n))
+    {
+      PERROR();
+      return -1;
+    }
+
+    if (n == 0) break ;
+
+    if (write(fd, p, n) != (ssize_t)n)
     {
       PERROR();
       return -1;
@@ -709,7 +739,7 @@ static int install_part(install_handle_t* inst)
 
   /* write the new partition contents */
 
-  if (write_with_efpak(disk, is, off, (size_t)-1))
+  if (disk_write_with_efpak(disk, is, off, (size_t)-1))
   {
     PERROR();
     goto on_error;
@@ -792,7 +822,7 @@ static int install_disk(install_handle_t* inst)
       goto on_error;
     }
 
-    if (write_with_efpak(disk, is, 1, inst->part_off[0] - 1))
+    if (disk_write_with_efpak(disk, is, 1, inst->part_off[0] - 1))
     {
       PERROR();
       goto on_error;
@@ -813,7 +843,7 @@ static int install_disk(install_handle_t* inst)
       goto on_error;
     }
 
-    if (write_with_efpak(disk, is, inst->area_off[i], inst->part_size[i]))
+    if (disk_write_with_efpak(disk, is, inst->area_off[i], inst->part_size[i]))
     {
       PERROR();
       goto on_error;
@@ -830,8 +860,56 @@ static int install_disk(install_handle_t* inst)
 
 static int install_file(install_handle_t* inst)
 {
-  /* TODO */
-  return -1;
+  const efpak_header_t* const h = inst->h;
+  efpak_istream_t* const is = inst->is;
+  const char* const file_path = (const char*)h->u.file.path;
+  const size_t path_len = (size_t)h->u.file.path_len;
+  size_t size;
+  size_t i;
+  int err;
+  int fd;
+  char dir_path[256];
+
+  /* check file size */
+  if (h->raw_data_size > (uint64_t)UINT32_MAX) goto on_error_0;
+  size = (size_t)h->raw_data_size;
+
+  /* must start with a slash */
+  if (path_len == 0) goto on_error_0;
+  if (file_path[0] != '/') goto on_error_0;
+
+  if (path_len > sizeof(dir_path)) goto on_error_0;
+
+  /* create directories along the path */
+  for (i = 1; 1; ++i)
+  {
+    /* not zero terminated */
+    if (i == path_len) goto on_error_0;
+
+    dir_path[i] = file_path[i];
+    if (file_path[i] == 0) break ;
+
+    if (file_path[i] != '/') continue ;
+
+    /* create directory if does not exist */
+    dir_path[i] = 0;
+    errno = 0;
+    if (mkdir(dir_path, 0755))
+    {
+      if (errno != EEXIST) goto on_error_0;
+    }
+  }
+
+  /* create the file */
+  fd = open(file_path, O_RDWR | O_TRUNC | O_CREAT, 0755);
+  if (fd == -1) goto on_error_0;
+  if (file_write_with_efpak(fd, is, size)) goto on_error_1;
+
+  err = 0;
+ on_error_1:
+  close(fd);
+ on_error_0:
+  return err;
 }
 
 static int install_efpak(install_handle_t* inst)
