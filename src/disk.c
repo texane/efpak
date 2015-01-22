@@ -399,6 +399,7 @@ static unsigned int is_mbr_magic(const mbr_t* mbr)
 
 static unsigned int is_mbe_valid(const mbe_t* e)
 {
+  if (e->status & (0x80 - 1)) return 0;
   return (e->type == 0x0c) || (e->type == 0x83);
 }
 
@@ -484,6 +485,16 @@ static void set_mbe_addr
 
   put_uint32_le((uint8_t*)&e->first_lba, (uint32_t)off);
   put_uint32_le((uint8_t*)&e->sector_count, (uint32_t)size);
+}
+
+static void set_mbe_type(mbe_t* e, uint8_t type)
+{
+  e->type = type;
+}
+
+static void set_mbe_status(mbe_t* e, uint8_t status)
+{
+  e->status = status;
 }
 
 static void get_mbe_addr
@@ -699,6 +710,13 @@ static int install_part(install_handle_t* inst)
 
   mbe = &inst->mbr.entries[inst->mbr_index[i]];
   set_mbe_addr(mbe, inst->disk->chs, off, size);
+
+  if (i == 2)
+  {
+    /* application part may not exist before */
+    set_mbe_status(mbe, 0x00);
+    set_mbe_type(mbe, 0x83);
+  }
 
   /* TODO: remount /new_xx with new partition */
 
