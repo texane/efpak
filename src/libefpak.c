@@ -689,7 +689,11 @@ int efpak_ostream_add_disk
 }
 
 int efpak_ostream_add_part
-(efpak_ostream_t* os, const char* path, efpak_partid_t id)
+(
+ efpak_ostream_t* os,
+ const char* path,
+ efpak_partid_t part_id, efpak_fsid_t fs_id
+)
 {
   efpak_header_t h;
   unsigned int is_comp;
@@ -709,7 +713,8 @@ int efpak_ostream_add_part
   h.comp_data_size = comp_size;
   h.raw_data_size = raw_size;
 
-  h.u.part.id = id;
+  h.u.part.part_id = part_id;
+  h.u.part.fs_id = fs_id;
 
   if (add_block(os, &h, data)) goto on_error_1;
 

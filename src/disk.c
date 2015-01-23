@@ -820,7 +820,7 @@ static int install_part(install_handle_t* inst)
 
   /* get partition new layout, ie. where to store in area */
 
-  switch ((efpak_partid_t)inst->h->u.part.id)
+  switch ((efpak_partid_t)inst->h->u.part.part_id)
   {
   case EFPAK_PARTID_BOOT:
     {
@@ -855,6 +855,15 @@ static int install_part(install_handle_t* inst)
       break ;
     }
 
+  default: goto on_error; break ;
+  }
+
+  switch ((efpak_fsid_t)inst->h->u.part.fs_id)
+  {
+  case EFPAK_FSID_VFAT: fs_name = "vfat"; break ;
+  case EFPAK_FSID_SQUASH: fs_name = "squash"; break ;
+  case EFPAK_FSID_EXT2: fs_name = "ext2"; break ;
+  case EFPAK_FSID_EXT3: fs_name = "ext3"; break ;
   default: goto on_error; break ;
   }
 

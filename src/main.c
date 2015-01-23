@@ -68,7 +68,8 @@ static int do_list(int ac, const char** av)
 
     case EFPAK_BTYPE_PART:
       {
-	printf(".id            : 0x%02x\n", h->u.part.id);
+	printf(".part_id       : 0x%02x\n", h->u.part.part_id);
+	printf(".fs_id         : 0x%02x\n", h->u.part.fs_id);
 	break ;
       }
 
@@ -145,22 +146,47 @@ static int do_add_disk(int ac, const char** av)
 static int do_add_part(int ac, const char** av)
 {
   const char* const efpak_path = av[2];
-  const char* const part_name = av[3];
-  const char* const part_path = av[4];
+  const char* const part_path = av[3];
+  const char* const part_name = av[4];
+  const char* fs_name = av[5];
 
-  efpak_partid_t id;
+  efpak_partid_t part_id;
+  efpak_fsid_t fs_id;
   efpak_ostream_t os;
   int err = -1;
 
-  if (ac != 5) goto on_error_0;
+  if (ac != 6)
+  {
+    if (ac != 5) goto on_error_0;
+    fs_name = NULL;
+  }
 
-  if (strcmp(part_name, "boot") == 0) id = EFPAK_PARTID_BOOT;
-  else if (strcmp(part_name, "root") == 0) id = EFPAK_PARTID_ROOT;
-  else if (strcmp(part_name, "app") == 0) id = EFPAK_PARTID_APP;
+  if (strcmp(part_name, "boot") == 0)
+  {
+    part_id = EFPAK_PARTID_BOOT;
+    if (fs_name == NULL) fs_name = "vfat";
+  }
+  else if (strcmp(part_name, "root") == 0)
+  {
+    part_id = EFPAK_PARTID_ROOT;
+    if (fs_name == NULL) fs_name = "squash";
+  }
+  else if (strcmp(part_name, "app") == 0)
+  {
+    part_id = EFPAK_PARTID_APP;
+    if (fs_name == NULL) fs_name = "ext3";
+  }
   else goto on_error_0;
 
+  if (strcmp(fs_name, "vfat") == 0) fs_id = EFPAK_FSID_VFAT;
+  else if (strcmp(fs_name, "squash") == 0) fs_id = EFPAK_FSID_SQUASH;
+  else if (strcmp(fs_name, "ext2") == 0) fs_id = EFPAK_FSID_EXT2;
+  else if (strcmp(fs_name, "ext3") == 0) fs_id = EFPAK_FSID_EXT3;
+  else goto on_error_0;
+
+
   if (efpak_ostream_init_with_file(&os, efpak_path)) goto on_error_0;
-  if (efpak_ostream_add_part(&os, part_path, id)) goto on_error_1;
+  if (efpak_ostream_add_part(&os, part_path, part_id, fs_id)) goto on_error_1;
   err = 0;
 
  on_error_1:
@@ -530,7 +556,7 @@ static int do_help(int ac, const char** av)
     "\n"
     ". adding contents: \n"
     " efpak add_disk efpak_path disk_path \n"
-    " efpak add_part efpak_path {boot,root,app} part_path \n"
+    " efpak add_part efpak_path part_path {boot,root,app} fs_type \n"
     " efpak add_file efpak_path src_path dst_path \n"
     " efpak add_dir efpak_path src_path dst_path \n"
     "\n"

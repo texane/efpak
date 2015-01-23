@@ -40,6 +40,17 @@ typedef enum efpak_partid
 } efpak_partid_t;
 
 
+/* filesystem identifier */
+typedef enum efpak_fsid
+{
+  EFPAK_FSID_VFAT = 0,
+  EFPAK_FSID_SQUASH,
+  EFPAK_FSID_EXT2,
+  EFPAK_FSID_EXT3,
+  EFPAK_FSID_INVALID
+} efpak_fsid_t;
+
+
 /* information about efpak itself */
 typedef struct efpak_format_header
 {
@@ -63,7 +74,9 @@ typedef struct efpak_disk_header
 typedef struct efpak_part_header
 {
   /* one of efpak_partid_t */
-  uint8_t id;
+  uint8_t part_id;
+  /* one of efpak_fsid_t */
+  uint8_t fs_id;
 } __attribute__((packed)) efpak_part_header_t;
 
 
@@ -187,7 +200,8 @@ int efpak_istream_next(efpak_istream_t*, const uint8_t**, size_t*);
 int efpak_ostream_init_with_file(efpak_ostream_t*, const char*);
 void efpak_ostream_fini(efpak_ostream_t*);
 int efpak_ostream_add_disk(efpak_ostream_t*, const char*);
-int efpak_ostream_add_part(efpak_ostream_t*, const char*, efpak_partid_t);
+int efpak_ostream_add_part
+(efpak_ostream_t*, const char*, efpak_partid_t, efpak_fsid_t);
 int efpak_ostream_add_file(efpak_ostream_t*, const char*, const char*);
 
 
