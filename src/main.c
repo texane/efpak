@@ -179,6 +179,7 @@ static int do_add_file(int ac, const char** av)
   int err = -1;
 
   if (ac != 5) goto on_error_0;
+
   if (efpak_ostream_init_with_file(&os, efpak_path)) goto on_error_0;
   if (efpak_ostream_add_file(&os, src_path, dst_path)) goto on_error_1;
   err = 0;
@@ -530,8 +531,8 @@ static int do_help(int ac, const char** av)
     ". adding contents: \n"
     " efpak add_disk efpak_path disk_path \n"
     " efpak add_part efpak_path {boot,root,app} part_path \n"
-    " efpak add_file efpak_path file \n"
-    " efpak add_dir efpak_path dir \n"
+    " efpak add_file efpak_path src_path dst_path \n"
+    " efpak add_dir efpak_path src_path dst_path \n"
     "\n"
     ". extracting contents: \n"
     " efpak extract efpak_path dest_dir \n"

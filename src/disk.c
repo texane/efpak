@@ -866,7 +866,7 @@ static int install_file(install_handle_t* inst)
   const size_t path_len = (size_t)h->u.file.path_len;
   size_t size;
   size_t i;
-  int err;
+  int err = -1;
   int fd;
   char dir_path[256];
 
@@ -881,6 +881,7 @@ static int install_file(install_handle_t* inst)
   if (path_len > sizeof(dir_path)) goto on_error_0;
 
   /* create directories along the path */
+  dir_path[0] = '/';
   for (i = 1; 1; ++i)
   {
     /* not zero terminated */
@@ -898,6 +899,7 @@ static int install_file(install_handle_t* inst)
     {
       if (errno != EEXIST) goto on_error_0;
     }
+    dir_path[i] = '/';
   }
 
   /* create the file */
