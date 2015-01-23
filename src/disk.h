@@ -11,6 +11,11 @@ typedef struct disk_handle
 {
   /* WARNING: 64 bit types to avoid overflow with large files */
 
+  char dev_path[256];
+  char* dev_name;
+  size_t name_size;
+  int dev_maj;
+
   int fd;
 
 #define DISK_BLOCK_SIZE 512
@@ -28,7 +33,6 @@ typedef struct disk_handle
 } disk_handle_t;
 
 
-int disk_open(disk_handle_t*, const char*);
 int disk_open_root(disk_handle_t*);
 int disk_open_dev(disk_handle_t*, const char*);
 void disk_close(disk_handle_t*);

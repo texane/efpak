@@ -14,8 +14,10 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/types.h>
+#include <sys/mount.h>
 #include <linux/fs.h>
 #include <linux/hdreg.h>
+#include <linux/blkpg.h>
 #include "disk.h"
 #include "libefpak.h" 
 
@@ -204,25 +206,28 @@ static int get_part_size(const char* name, size_t i, uint64_t* off)
   return err;
 }
 
-static const char* make_dev_path(const char* name)
+static int disk_open(disk_handle_t* disk)
 {
-  static char path[512];
-  strcpy(path, "/dev/");
-  strcat(path, name);
-  return path;
-}
+  const char* const dev_path = disk->dev_path;
+  const char* const dev_name = disk->dev_name;
 
-int disk_open(disk_handle_t* disk, const char* dev_name)
-{
   uint64_t dev_size;
+  struct stat st;
   size_t i;
 
-  disk->fd = open(make_dev_path(dev_name), O_RDWR | O_LARGEFILE | O_SYNC);
+  disk->fd = open(dev_path, O_RDWR | O_LARGEFILE | O_SYNC);
   if (disk->fd == -1)
   {
     PERROR();
     goto on_error_0;
   }
+
+  if (fstat(disk->fd, &st))
+  {
+    PERROR();
+    goto on_error_1;
+  }
+  disk->dev_maj = major(st.st_rdev);
 
   if (get_block_size(disk->fd, &disk->block_size))
   {
@@ -280,16 +285,27 @@ int disk_open(disk_handle_t* disk, const char* dev_name)
   return -1;
 }
 
+static void prepend_slash_dev(disk_handle_t* disk)
+{
+  const size_t pre_size = sizeof("/dev/") - 1;
+  memcpy(disk->dev_path, "/dev/", pre_size);
+  disk->dev_name = disk->dev_path + pre_size;
+  disk->name_size = sizeof(disk->dev_path) - pre_size;
+}
+
 int disk_open_root(disk_handle_t* disk)
 {
-  char buf[256];
-  if (get_root_dev_name(buf, sizeof(buf)) == NULL) return -1;
-  return disk_open(disk, buf);
+  prepend_slash_dev(disk);
+  if (get_root_dev_name(disk->dev_name, disk->name_size) == NULL) return -1;
+  return disk_open(disk);
 }
 
 int disk_open_dev(disk_handle_t* disk, const char* name)
 {
-  return disk_open(disk, name);
+  prepend_slash_dev(disk);
+  if (strlen(name) >= disk->name_size) return -1;
+  strcpy(disk->dev_name, name);
+  return disk_open(disk);
 }
 
 void disk_close(disk_handle_t* disk)
@@ -670,6 +686,97 @@ static int install_get_part_layout(install_handle_t* inst)
   return -1;
 }
 
+static int mount_part
+(
+ install_handle_t* inst,
+ int dev_min,
+ const char* mnt_path, unsigned long mnt_flags,
+ const char* fs_name,
+ const char* vol_name,
+ uint64_t off, uint64_t size
+)
+{
+  /* TODO: make dev path from disk opening name root */
+
+  disk_handle_t* const disk = inst->disk;
+
+  int err = -1;
+  const size_t dev_path_len = strlen(disk->dev_path);
+  const dev_t dev_dev = makedev(disk->dev_maj, dev_min);
+  struct blkpg_ioctl_arg blkpg_arg;
+  struct blkpg_partition blkpg_part;
+
+  /* construct the device path */
+  disk->dev_path[dev_path_len + 0] = 'p';
+  disk->dev_path[dev_path_len + 1] = (char)'0' + (char)dev_min;
+  disk->dev_path[dev_path_len + 2] = 0;
+
+  printf("mount(%s, %s, %llu, %llu)\n", disk->dev_path, mnt_path, off, size);
+
+  /* add a new partition and mount it */
+
+  blkpg_part.start = (long long)off;
+  blkpg_part.length = (long long)size;
+  blkpg_part.pno = dev_min;
+  strcpy(blkpg_part.devname, disk->dev_path);
+  strcpy(blkpg_part.volname, vol_name);
+
+  blkpg_arg.op = BLKPG_ADD_PARTITION;
+  blkpg_arg.flags = 0;
+  blkpg_arg.datalen = sizeof(blkpg_part);
+  blkpg_arg.data = (void*)&blkpg_part;
+
+  errno = 0;
+  if (ioctl(disk->fd, BLKPG, &blkpg_arg))
+  {
+    PERROR();
+    goto on_error_0;
+  }
+
+  errno = 0;
+  if (mknod(disk->dev_path, S_IRWXU | S_IFBLK, dev_dev))
+  {
+    if (errno != EEXIST)
+    {
+      PERROR();
+      goto on_error_0;
+    }
+  }
+
+  errno = 0;
+  if (mkdir(mnt_path, S_IRWXU))
+  {
+    if (errno != EEXIST)
+    {
+      PERROR();
+      goto on_error_1;
+    }
+  }
+
+  /* umount if already mounted */
+  umount(mnt_path);
+
+  errno = 0;
+  if (mount(disk->dev_path, mnt_path, fs_name, mnt_flags, NULL))
+  {
+    printf("mount_error, errno = %d\n", errno); getchar();
+    PERROR();
+    goto on_error_2;
+  }
+
+  err = 0;
+  goto on_success;
+
+ on_error_2:
+  rmdir(mnt_path);
+ on_error_1:
+  unlink(disk->dev_path);
+ on_error_0:
+  disk->dev_path[dev_path_len] = 0;
+ on_success:
+  return err;
+}
+
 static int install_part(install_handle_t* inst)
 {
   static const size_t mbr_nblk = sizeof(mbr_t) / DISK_BLOCK_SIZE;
@@ -677,6 +784,12 @@ static int install_part(install_handle_t* inst)
   disk_handle_t* const disk = inst->disk;
   efpak_istream_t* const is = inst->is;
   const efpak_header_t* const h = inst->h;
+  const char* mnt_path;
+  const char* vol_name;
+  const char* fs_name;
+  int dev_min;
+  unsigned long mnt_flags;
+  int err;
   size_t i;
   size_t off;
   size_t size;
@@ -711,9 +824,39 @@ static int install_part(install_handle_t* inst)
 
   switch ((efpak_partid_t)inst->h->u.part.id)
   {
-  case EFPAK_PARTID_BOOT: i = 0; break ;
-  case EFPAK_PARTID_ROOT: i = 1; break ;
-  case EFPAK_PARTID_APP: i = 2; break ;
+  case EFPAK_PARTID_BOOT:
+    {
+      i = 0;
+      vol_name = "new_boot";
+      mnt_path = "/tmp/new_boot";
+      dev_min = 5;
+      fs_name = "vfat";
+      mnt_flags = 0;
+      break ;
+    }
+
+  case EFPAK_PARTID_ROOT:
+    {
+      i = 1;
+      vol_name = "new_root";
+      mnt_path = "/tmp/new_root";
+      dev_min = 6;
+      fs_name = "squashfs";
+      mnt_flags = MS_RDONLY;
+      break ;
+    }
+
+  case EFPAK_PARTID_APP:
+    {
+      i = 2;
+      vol_name = "new_app";
+      mnt_path = "/tmp/new_app";
+      dev_min = 7;
+      fs_name = "ext3";
+      mnt_flags = 0;
+      break ;
+    }
+
   default: goto on_error; break ;
   }
 
@@ -752,12 +895,20 @@ static int install_part(install_handle_t* inst)
 
   if (i == 2)
   {
-    /* application part may not exist before */
+    /* mbe may not exist before */
     set_mbe_status(mbe, 0x00);
     set_mbe_type(mbe, 0x83);
   }
 
-  /* TODO: remount /new_xx with new partition */
+  /* mount new partition in /tmp/new_xxx */
+
+  err = mount_part
+    (inst, dev_min, mnt_path, mnt_flags, fs_name, vol_name, off, size);
+  if (err)
+  {
+    PERROR();
+    goto on_error;
+  }
 
   return 0;
 
