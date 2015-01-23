@@ -632,6 +632,7 @@ static int install_get_part_layout(install_handle_t* inst)
   /* get the current partitioning layout */
 
   const size_t max_disk_size = UINT32_MAX / DISK_BLOCK_SIZE;
+  const size_t empty_size = (512 + 2 * 1024 * 1024) / DISK_BLOCK_SIZE;
   const size_t boot_size = (2 * 256 * 1024 * 1024) / DISK_BLOCK_SIZE;
   const size_t root_size = (2 * 512 * 1024 * 1024) / DISK_BLOCK_SIZE;
   const size_t app_size = (2 * 512 * 1024 * 1024) / DISK_BLOCK_SIZE;
@@ -651,7 +652,7 @@ static int install_get_part_layout(install_handle_t* inst)
   /* find boot partition. deduce root and app info. */
 
   boot_index = find_active_mbe(&inst->mbr);
-  /* if (boot_index == MBR_ENTRY_COUNT) return -1; */
+  /* if (boot_index == MBR_ENTRY_COUNT) goto on_error; */
   if (boot_index > 1) goto on_error;
 
   for (i = 0; i != 3; ++i)
@@ -671,7 +672,7 @@ static int install_get_part_layout(install_handle_t* inst)
 
   /* area bases and sizes */
   /* refer to firmware disk documentation */
-  inst->area_off[0] = inst->part_off[0];
+  inst->area_off[0] = empty_size;
   inst->area_size[0] = boot_size;
   inst->area_off[1] = inst->area_off[0] + boot_size;
   inst->area_size[1] = root_size;
@@ -696,8 +697,6 @@ static int mount_part
  uint64_t off, uint64_t size
 )
 {
-  /* TODO: make dev path from disk opening name root */
-
   disk_handle_t* const disk = inst->disk;
 
   int err = -1;
