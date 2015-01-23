@@ -706,17 +706,14 @@ static int mount_part
   struct blkpg_ioctl_arg blkpg_arg;
   struct blkpg_partition blkpg_part;
 
-  /* construct the device path */
+  /* add a new partition and mount it */
+
   disk->dev_path[dev_path_len + 0] = 'p';
   disk->dev_path[dev_path_len + 1] = (char)'0' + (char)dev_min;
   disk->dev_path[dev_path_len + 2] = 0;
 
-  printf("mount(%s, %s, %llu, %llu)\n", disk->dev_path, mnt_path, off, size);
-
-  /* add a new partition and mount it */
-
-  blkpg_part.start = (long long)off;
-  blkpg_part.length = (long long)size;
+  blkpg_part.start = (long long)(off * DISK_BLOCK_SIZE);
+  blkpg_part.length = (long long)(size * DISK_BLOCK_SIZE);
   blkpg_part.pno = dev_min;
   strcpy(blkpg_part.devname, disk->dev_path);
   strcpy(blkpg_part.volname, vol_name);
@@ -739,7 +736,7 @@ static int mount_part
     if (errno != EEXIST)
     {
       PERROR();
-      goto on_error_0;
+      goto on_error_1;
     }
   }
 
@@ -749,7 +746,7 @@ static int mount_part
     if (errno != EEXIST)
     {
       PERROR();
-      goto on_error_1;
+      goto on_error_2;
     }
   }
 
@@ -759,21 +756,23 @@ static int mount_part
   errno = 0;
   if (mount(disk->dev_path, mnt_path, fs_name, mnt_flags, NULL))
   {
-    printf("mount_error, errno = %d\n", errno); getchar();
     PERROR();
-    goto on_error_2;
+    goto on_error_3;
   }
 
   err = 0;
   goto on_success;
 
- on_error_2:
+ on_error_3:
   rmdir(mnt_path);
- on_error_1:
+ on_error_2:
   unlink(disk->dev_path);
+ on_error_1:
+  blkpg_arg.op = BLKPG_DEL_PARTITION;
+  ioctl(disk->fd, BLKPG, &blkpg_arg);
  on_error_0:
-  disk->dev_path[dev_path_len] = 0;
  on_success:
+  disk->dev_path[dev_path_len] = 0;
   return err;
 }
 
