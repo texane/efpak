@@ -828,7 +828,6 @@ static int install_part(install_handle_t* inst)
       vol_name = "new_boot";
       mnt_path = "/tmp/new_boot";
       dev_min = 5;
-      fs_name = "vfat";
       mnt_flags = 0;
       break ;
     }
@@ -839,7 +838,6 @@ static int install_part(install_handle_t* inst)
       vol_name = "new_root";
       mnt_path = "/tmp/new_root";
       dev_min = 6;
-      fs_name = "squashfs";
       mnt_flags = MS_RDONLY;
       break ;
     }
@@ -850,7 +848,6 @@ static int install_part(install_handle_t* inst)
       vol_name = "new_app";
       mnt_path = "/tmp/new_app";
       dev_min = 7;
-      fs_name = "ext3";
       mnt_flags = 0;
       break ;
     }
@@ -861,7 +858,7 @@ static int install_part(install_handle_t* inst)
   switch ((efpak_fsid_t)inst->h->u.part.fs_id)
   {
   case EFPAK_FSID_VFAT: fs_name = "vfat"; break ;
-  case EFPAK_FSID_SQUASH: fs_name = "squash"; break ;
+  case EFPAK_FSID_SQUASH: fs_name = "squashfs"; break ;
   case EFPAK_FSID_EXT2: fs_name = "ext2"; break ;
   case EFPAK_FSID_EXT3: fs_name = "ext3"; break ;
   default: goto on_error; break ;
