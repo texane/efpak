@@ -773,3 +773,57 @@ int efpak_ostream_add_file
  on_error_0:
   return err;
 }
+
+int efpak_ostream_add_hook
+(
+ efpak_ostream_t* os,
+ const char* dpath, const char* xpath,
+ uint32_t when_flags, uint32_t exec_flags
+)
+{
+  /* dpath the path of the file containting the block data. */
+  /* xpath the extraction path. can be null for tmp file. */
+
+  efpak_header_t* h;
+  size_t header_size;
+  unsigned int is_comp;
+  const uint8_t* data;
+  size_t comp_size;
+  size_t raw_size;
+  size_t len;
+  int err = -1;
+
+  len = 0;
+  if (xpath != NULL) len = strlen(xpath) + 1;
+  header_size = header_min_size + offsetof(efpak_hook_header_t, path) + len;
+  h = malloc(header_size);
+  if (h == NULL) goto on_error_0;
+
+  if (deflate_file_if_large(dpath, &data, &raw_size, &comp_size, &is_comp))
+    goto on_error_1;
+
+  init_header(h);
+
+  h->type = EFPAK_BTYPE_HOOK;
+  h->comp = is_comp ? EFPAK_BCOMP_ZLIB : EFPAK_BCOMP_NONE;
+  h->header_size = header_size;
+  h->comp_data_size = comp_size;
+  h->raw_data_size = raw_size;
+
+  h->u.hook.when_flags = when_flags;
+  h->u.hook.exec_flags = exec_flags;
+  h->u.hook.path_len = len;
+  if (xpath != NULL) strcpy((char*)h->u.hook.path, xpath);
+
+  if (add_block(os, h, data)) goto on_error_2;
+
+  err = 0;
+
+ on_error_2:
+  if (is_comp) free((void*)data);
+  else unmap_file(data, comp_size);
+ on_error_1:
+  free(h);
+ on_error_0:
+  return err;
+}

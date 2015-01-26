@@ -89,6 +89,37 @@ static int do_list(int ac, const char** av)
 	break ;
       }
 
+    case EFPAK_BTYPE_HOOK:
+      {
+	const uint32_t wflags = h->u.hook.when_flags;
+	const uint32_t eflags = h->u.hook.exec_flags;
+	const char* s = "invalid";
+	size_t i;
+
+	printf(".wflags        :");
+	if (wflags & EFPAK_HOOK_NOW) printf(" now");
+	if (wflags & EFPAK_HOOK_PREX) printf(" prex");
+	if (wflags & EFPAK_HOOK_POSTX) printf(" postx");
+	if (wflags & EFPAK_HOOK_COMPL) printf(" compl");
+	printf("\n");
+
+	printf(".eflags        :");
+	if (eflags & EFPAK_HOOK_EXECVE) printf(" execve");
+	printf("\n");
+
+	for (i = 0; i != h->u.hook.path_len; ++i)
+	{
+	  if (h->u.hook.path[i] == 0)
+	  {
+	    s = (const char*)h->u.hook.path;
+	    break ;
+	  }
+	}
+	printf(".path          : %s\n", s);
+
+	break ;
+      }
+
     default:
       {
 	break ;
@@ -183,7 +214,6 @@ static int do_add_part(int ac, const char** av)
   else if (strcmp(fs_name, "ext2") == 0) fs_id = EFPAK_FSID_EXT2;
   else if (strcmp(fs_name, "ext3") == 0) fs_id = EFPAK_FSID_EXT3;
   else goto on_error_0;
-
 
   if (efpak_ostream_init_with_file(&os, efpak_path)) goto on_error_0;
   if (efpak_ostream_add_part(&os, part_path, part_id, fs_id)) goto on_error_1;
@@ -386,6 +416,70 @@ static int do_add_dir(int ac, const char** av)
   return err;
 }
 
+static int do_add_hook(int ac, const char** av)
+{
+  const char* const efpak_path = av[2];
+  const char* const dpath = av[3];
+  const char* const flags = av[4];
+
+  const char* const xpath = NULL;
+  const uint32_t eflags = EFPAK_HOOK_EXECVE;
+
+  static const struct
+  {
+    const char* s;
+    uint32_t f;
+  } pairs[] =
+  {
+    { "now", EFPAK_HOOK_NOW },
+    { "prex", EFPAK_HOOK_PREX },
+    { "postx", EFPAK_HOOK_POSTX },
+    { "compl", EFPAK_HOOK_COMPL }
+  };
+
+  static const size_t npairs = sizeof(pairs) / sizeof(pairs[0]);
+
+  efpak_ostream_t os;
+  uint32_t wflags;
+  size_t i;
+  size_t j;
+  size_t k;
+  int err = -1;
+
+  if (ac != 5) goto on_error_0;
+
+  if (efpak_ostream_init_with_file(&os, efpak_path)) goto on_error_0;
+
+  wflags = 0;
+  k = 0;
+  for (i = 0; 1; ++i)
+  {
+    if ((flags[i] != ',') && (flags[i] != 0)) continue ;
+    
+    for (j = 0; j != npairs; ++j)
+    {
+      const size_t n = strlen(pairs[j].s);
+      if (memcmp(pairs[j].s, flags + k, n) == 0) break ;
+    }
+
+    if (j == npairs) goto on_error_1;
+    wflags |= pairs[j].f;
+
+    if (flags[i] == 0) break ;
+    k = i + 1;
+  }
+
+  if (efpak_ostream_add_hook(&os, dpath, xpath, wflags, eflags))
+    goto on_error_1;
+
+  err = 0;
+
+ on_error_1:
+  efpak_ostream_fini(&os);
+ on_error_0:
+  return err;
+}
+
 static int do_extract(int ac, const char** av)
 {
   const char* const efpak_path = av[2];
@@ -559,6 +653,7 @@ static int do_help(int ac, const char** av)
     " efpak add_part efpak_path part_path {boot,root,app} fs_type \n"
     " efpak add_file efpak_path src_path dst_path \n"
     " efpak add_dir efpak_path src_path dst_path \n"
+    " efpak add_hook efpak_path data_path {now,prex,postx,compl} \n"
     "\n"
     ". extracting contents: \n"
     " efpak extract efpak_path dest_dir \n"
@@ -589,6 +684,7 @@ int main(int ac, const char** av)
     { "add_part", do_add_part },
     { "add_file", do_add_file },
     { "add_dir", do_add_dir },
+    { "add_hook", do_add_hook },
     { "extract", do_extract },
     { "install", do_install },
     { "send", do_send },

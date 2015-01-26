@@ -10,11 +10,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <dirent.h>
+#include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/mount.h>
+#include <sys/wait.h>
 #include <linux/fs.h>
 #include <linux/hdreg.h>
 #include <linux/blkpg.h>
@@ -616,6 +618,11 @@ typedef struct install_handle
   size_t part_off[3];
   size_t part_size[3];
 
+  /* hook */
+  uint32_t hook_flags;
+  char* hook_path;
+  const char* hook_av[8];
+
 } install_handle_t;
 
 static int install_init
@@ -624,7 +631,14 @@ static int install_init
   inst->disk = disk;
   inst->is = is;
   inst->flags = 0;
+  inst->hook_path = NULL;
+  inst->hook_flags = 0;
   return 0;
+}
+
+static void install_fini(install_handle_t* inst)
+{
+  if (inst->hook_path != NULL) free((void*)inst->hook_path);
 }
 
 static int install_get_part_layout(install_handle_t* inst)
@@ -1069,6 +1083,192 @@ static int install_file(install_handle_t* inst)
   return err;
 }
 
+static int exec_hook(install_handle_t* inst)
+{
+  pid_t pid;
+  int status;
+
+  pid = fork();
+  if (pid == -1)
+  {
+    PERROR();
+    return -1;
+  }
+
+  if (pid == 0)
+  {
+    /* child */
+    execve(inst->hook_path, (char**)inst->hook_av, NULL);
+    /* not reached or error */
+    exit(-1);
+  }
+
+  if (waitpid(pid, &status, 0) == -1)
+  {
+    PERROR();
+    kill(pid, SIGKILL);
+    return -1;
+  }
+
+  if (WIFEXITED(status) == 0) return -1;
+  return (int)WEXITSTATUS(status);
+}
+
+static int exec_prex_hook(install_handle_t* inst)
+{
+  if ((inst->hook_flags & EFPAK_HOOK_PREX) == 0) return 0;
+
+  inst->hook_av[1] = "prex";
+
+  switch (inst->h->type)
+  {
+  case EFPAK_BTYPE_PART:
+    {
+      inst->hook_av[2] = "part";
+      switch ((efpak_partid_t)inst->h->u.part.part_id)
+      {
+      default:
+      case EFPAK_PARTID_BOOT: inst->hook_av[3] = "boot"; break ;
+      case EFPAK_PARTID_ROOT: inst->hook_av[3] = "root"; break ;
+      case EFPAK_PARTID_APP: inst->hook_av[3] = "app"; break ;
+      }
+      inst->hook_av[4] = NULL;
+      break ;
+    }
+
+  case EFPAK_BTYPE_FILE:
+    {
+      inst->hook_av[2] = "file";
+      inst->hook_av[3] = (const char*)inst->h->u.file.path;
+      inst->hook_av[4] = NULL;
+      break ;
+    }
+
+  default:
+    return 0;
+    break ;
+  }
+
+  return exec_hook(inst);
+}
+
+static int exec_postx_hook(install_handle_t* inst, int err)
+{
+  if ((inst->hook_flags & EFPAK_HOOK_POSTX) == 0) return 0;
+
+  inst->hook_av[1] = "postx";
+
+  switch (inst->h->type)
+  {
+  case EFPAK_BTYPE_PART:
+    {
+      inst->hook_av[2] = "part";
+      switch ((efpak_partid_t)inst->h->u.part.part_id)
+      {
+      default:
+      case EFPAK_PARTID_BOOT: inst->hook_av[3] = "boot"; break ;
+      case EFPAK_PARTID_ROOT: inst->hook_av[3] = "root"; break ;
+      case EFPAK_PARTID_APP: inst->hook_av[3] = "app"; break ;
+      }
+      if (err) inst->hook_av[4] = "-1";
+      else inst->hook_av[4] = "0";
+      inst->hook_av[5] = NULL;
+      break ;
+    }
+
+  case EFPAK_BTYPE_FILE:
+    {
+      inst->hook_av[2] = "file";
+      inst->hook_av[3] = (char*)inst->h->u.file.path;
+      if (err) inst->hook_av[4] = "-1";
+      else inst->hook_av[4] = "0";
+      inst->hook_av[5] = NULL;
+      break ;
+    }
+
+  default:
+    return 0;
+    break ;
+  }
+
+  return exec_hook(inst);
+}
+
+static int exec_now_hook(install_handle_t* inst)
+{
+  if ((inst->hook_flags & EFPAK_HOOK_NOW) == 0) return 0;
+  inst->hook_av[1] = "now";
+  inst->hook_av[2] = NULL;
+  return exec_hook(inst);
+}
+
+static int exec_compl_hook(install_handle_t* inst, int err)
+{
+  if ((inst->hook_flags & EFPAK_HOOK_COMPL) == 0) return 0;
+
+  inst->hook_av[1] = "compl";
+  if (err) inst->hook_av[2] = "-1";
+  else inst->hook_av[2] = "0";
+  inst->hook_av[3] = NULL;
+
+  return exec_hook(inst);
+}
+
+static int install_hook(install_handle_t* inst)
+{
+  const efpak_header_t* const h = inst->h;
+  efpak_istream_t* const is = inst->is;
+  const char* file_path;
+  size_t path_len;
+  size_t size;
+  int err = -1;
+  int fd;
+
+  /* check file size */
+  if (h->raw_data_size > (uint64_t)UINT32_MAX) goto on_error_0;
+  size = (size_t)h->raw_data_size;
+
+  /* capture the path */
+  path_len = (size_t)h->u.hook.path_len;
+  if (path_len == 0)
+  {
+    file_path = "/tmp/efpak_hook";
+    path_len = strlen(file_path) + 1;
+  }
+  else
+  {
+    file_path = (const char*)h->u.hook.path;
+    if (file_path[path_len - 1]) goto on_error_0;
+  }
+
+  inst->hook_path = malloc(path_len);
+  if (inst->hook_path == NULL) goto on_error_0;
+  strcpy(inst->hook_path, file_path);
+  inst->hook_av[0] = inst->hook_path;
+
+  if (size)
+  {
+    /* create the file */
+    fd = open(file_path, O_RDWR | O_TRUNC | O_CREAT, 0755);
+    if (fd == -1) goto on_error_1;
+    err = file_write_with_efpak(fd, is, size);
+    close(fd);
+    if (err) goto on_error_1;
+  }
+
+  inst->hook_flags = h->u.hook.when_flags;
+
+  err = 0;
+ on_error_1:
+  if (err)
+  {
+    free(inst->hook_path);
+    inst->hook_path = NULL;
+  }
+ on_error_0:
+  return err;
+}
+
 static int install_efpak(install_handle_t* inst)
 {
   /* to increase safety, the mbr is updated only */
@@ -1087,10 +1287,14 @@ static int install_efpak(install_handle_t* inst)
     err = efpak_istream_start_block(inst->is);
     if (err) goto on_error;
 
+    err = exec_prex_hook(inst);
+    if (err) goto on_error;
+
     switch (inst->h->type)
     {
     case EFPAK_BTYPE_FORMAT:
       {
+	goto skip_hook;
 	break ;
       }
 
@@ -1112,45 +1316,47 @@ static int install_efpak(install_handle_t* inst)
 	break ;
       }
 
+    case EFPAK_BTYPE_HOOK:
+      {
+	err = install_hook(inst);
+	if (err == 0) err = exec_now_hook(inst);
+	goto skip_hook;
+	break ;
+      }
+
     default:
       {
 	err = -1;
+	goto skip_hook;
 	break ;
       }
     }
 
+    if (exec_postx_hook(inst, err)) err = -1;
+
+  skip_hook:
     efpak_istream_end_block(inst->is);
-
-    if (err)
-    {
-      PERROR();
-      goto on_error;
-    }
+    if (err) goto on_error;
   }
-
-  /* reset error */
-  err = -1;
 
   if (inst->flags & INSTALL_FLAG_MBR)
   {
     /* commit the mbr */
-
-    if (disk_write(inst->disk, 0, mbr_nblk, (const uint8_t*)&inst->mbr))
-    {
-      PERROR();
-      goto on_error;
-    }
+    err = disk_write(inst->disk, 0, mbr_nblk, (const uint8_t*)&inst->mbr);
+    if (err) goto on_error;
   }
 
-  err = 0;
-
  on_error:
+  if (exec_compl_hook(inst, err)) err = -1;
   return err;
 }
 
 int disk_install_with_efpak(disk_handle_t* disk, efpak_istream_t* is)
 {
   install_handle_t inst;
+  int err; 
   install_init(&inst, disk, is);
-  return install_efpak(&inst);
+  err = install_efpak(&inst);
+  install_fini(&inst);
+  return err;
 }
