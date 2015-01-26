@@ -620,7 +620,7 @@ typedef struct install_handle
 
   /* hook */
   uint32_t hook_flags;
-  char* hook_path;
+  const char* hook_path;
   const char* hook_av[8];
 
 } install_handle_t;
@@ -638,7 +638,6 @@ static int install_init
 
 static void install_fini(install_handle_t* inst)
 {
-  if (inst->hook_path != NULL) free((void*)inst->hook_path);
 }
 
 static int install_get_part_layout(install_handle_t* inst)
@@ -1218,57 +1217,44 @@ static int install_hook(install_handle_t* inst)
 {
   const efpak_header_t* const h = inst->h;
   efpak_istream_t* const is = inst->is;
-  const char* file_path;
   size_t path_len;
   size_t size;
   int err = -1;
   int fd;
 
   /* only one hook allowed for now */
-  if (inst->hook_path != NULL) goto on_error_0;
+  if (inst->hook_path != NULL) goto on_error;
 
   /* check file size */
-  if (h->raw_data_size > (uint64_t)UINT32_MAX) goto on_error_0;
+  if (h->raw_data_size > (uint64_t)UINT32_MAX) goto on_error;
   size = (size_t)h->raw_data_size;
 
-  /* capture the path */
+  /* get the executable path */
+  inst->hook_path = "/tmp/efpak_hook";
   path_len = (size_t)h->u.hook.path_len;
-  if (path_len == 0)
+  if (path_len)
   {
-    file_path = "/tmp/efpak_hook";
-    path_len = strlen(file_path) + 1;
-  }
-  else
-  {
-    file_path = (const char*)h->u.hook.path;
-    if (file_path[path_len - 1]) goto on_error_0;
+    /* TODO: check path len */
+    inst->hook_path = (const char*)h->u.hook.path;
+    if (inst->hook_path[path_len - 1]) goto on_error;
   }
 
-  inst->hook_path = malloc(path_len);
-  if (inst->hook_path == NULL) goto on_error_0;
-  strcpy(inst->hook_path, file_path);
   inst->hook_av[0] = inst->hook_path;
 
   if (size)
   {
     /* create the file */
-    fd = open(file_path, O_RDWR | O_TRUNC | O_CREAT, 0755);
-    if (fd == -1) goto on_error_1;
+    fd = open(inst->hook_path, O_RDWR | O_TRUNC | O_CREAT, 0755);
+    if (fd == -1) goto on_error;
     err = file_write_with_efpak(fd, is, size);
     close(fd);
-    if (err) goto on_error_1;
+    if (err) goto on_error;
   }
 
   inst->hook_flags = h->u.hook.when_flags;
 
   err = 0;
- on_error_1:
-  if (err)
-  {
-    free(inst->hook_path);
-    inst->hook_path = NULL;
-  }
- on_error_0:
+ on_error:
   return err;
 }
 
