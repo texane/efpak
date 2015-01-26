@@ -1288,7 +1288,13 @@ static int install_efpak(install_handle_t* inst)
     if (err) goto on_error;
 
     err = exec_prex_hook(inst);
-    if (err) goto on_error;
+    if (err)
+    {
+      /* 1 is for skipping the block */
+      if (err != 1) goto on_error;
+      err = 0;
+      goto skip_block;
+    }
 
     switch (inst->h->type)
     {
@@ -1335,6 +1341,7 @@ static int install_efpak(install_handle_t* inst)
     if (exec_postx_hook(inst, err)) err = -1;
 
   skip_hook:
+  skip_block:
     efpak_istream_end_block(inst->is);
     if (err) goto on_error;
   }
