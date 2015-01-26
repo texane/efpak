@@ -1224,6 +1224,9 @@ static int install_hook(install_handle_t* inst)
   int err = -1;
   int fd;
 
+  /* only one hook allowed for now */
+  if (inst->hook_path != NULL) goto on_error_0;
+
   /* check file size */
   if (h->raw_data_size > (uint64_t)UINT32_MAX) goto on_error_0;
   size = (size_t)h->raw_data_size;
