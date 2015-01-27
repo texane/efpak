@@ -1196,8 +1196,10 @@ static int exec_postx_hook(install_handle_t* inst, int err)
 static int exec_now_hook(install_handle_t* inst)
 {
   if ((inst->hook_flags & EFPAK_HOOK_NOW) == 0) return 0;
+
   inst->hook_av[1] = "now";
   inst->hook_av[2] = NULL;
+
   return exec_hook(inst);
 }
 
