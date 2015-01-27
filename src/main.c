@@ -101,6 +101,7 @@ static int do_list(int ac, const char** av)
 	if (wflags & EFPAK_HOOK_PREX) printf(" prex");
 	if (wflags & EFPAK_HOOK_POSTX) printf(" postx");
 	if (wflags & EFPAK_HOOK_COMPL) printf(" compl");
+	if (wflags & EFPAK_HOOK_MBR) printf(" mbr");
 	printf("\n");
 
 	printf(".eflags        :");
@@ -434,7 +435,8 @@ static int do_add_hook(int ac, const char** av)
     { "now", EFPAK_HOOK_NOW },
     { "prex", EFPAK_HOOK_PREX },
     { "postx", EFPAK_HOOK_POSTX },
-    { "compl", EFPAK_HOOK_COMPL }
+    { "compl", EFPAK_HOOK_COMPL },
+    { "mbr", EFPAK_HOOK_MBR }
   };
 
   static const size_t npairs = sizeof(pairs) / sizeof(pairs[0]);
@@ -653,7 +655,7 @@ static int do_help(int ac, const char** av)
     " efpak add_part efpak_path part_path {boot,root,app} fs_type \n"
     " efpak add_file efpak_path src_path dst_path \n"
     " efpak add_dir efpak_path src_path dst_path \n"
-    " efpak add_hook efpak_path data_path {now,prex,postx,compl} \n"
+    " efpak add_hook efpak_path data_path {now,prex,postx,compl,mbr} \n"
     "\n"
     ". extracting contents: \n"
     " efpak extract efpak_path dest_dir \n"

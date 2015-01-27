@@ -1082,10 +1082,9 @@ static int install_file(install_handle_t* inst)
   return err;
 }
 
-static int exec_hook(install_handle_t* inst)
+static int exec_hook(install_handle_t* inst, int* status)
 {
   pid_t pid;
-  int status;
 
   pid = fork();
   if (pid == -1)
@@ -1102,19 +1101,22 @@ static int exec_hook(install_handle_t* inst)
     exit(-1);
   }
 
-  if (waitpid(pid, &status, 0) == -1)
+  if (waitpid(pid, status, 0) == -1)
   {
     PERROR();
     kill(pid, SIGKILL);
     return -1;
   }
 
-  if (WIFEXITED(status) == 0) return -1;
-  return (int)WEXITSTATUS(status);
+  if (WIFEXITED(*status) == 0) return -1;
+  *status = (int)WEXITSTATUS(*status);
+  return 0;
 }
 
-static int exec_prex_hook(install_handle_t* inst)
+static int exec_prex_hook(install_handle_t* inst, int* status)
 {
+  *status = EFPAK_HOOK_CONTINUE;
+
   if ((inst->hook_flags & EFPAK_HOOK_PREX) == 0) return 0;
 
   inst->hook_av[1] = "prex";
@@ -1148,11 +1150,13 @@ static int exec_prex_hook(install_handle_t* inst)
     break ;
   }
 
-  return exec_hook(inst);
+  return exec_hook(inst, status);
 }
 
-static int exec_postx_hook(install_handle_t* inst, int err)
+static int exec_postx_hook(install_handle_t* inst, int err, int* status)
 {
+  *status = EFPAK_HOOK_CONTINUE;
+
   if ((inst->hook_flags & EFPAK_HOOK_POSTX) == 0) return 0;
 
   inst->hook_av[1] = "postx";
@@ -1190,21 +1194,37 @@ static int exec_postx_hook(install_handle_t* inst, int err)
     break ;
   }
 
-  return exec_hook(inst);
+  return exec_hook(inst, status);
 }
 
-static int exec_now_hook(install_handle_t* inst)
+static int exec_now_hook(install_handle_t* inst, int* status)
 {
+  *status = EFPAK_HOOK_CONTINUE;
+
   if ((inst->hook_flags & EFPAK_HOOK_NOW) == 0) return 0;
 
   inst->hook_av[1] = "now";
   inst->hook_av[2] = NULL;
 
-  return exec_hook(inst);
+  return exec_hook(inst, status);
 }
 
-static int exec_compl_hook(install_handle_t* inst, int err)
+static int exec_mbr_hook(install_handle_t* inst, int* status)
 {
+  *status = EFPAK_HOOK_CONTINUE;
+
+  if ((inst->hook_flags & EFPAK_HOOK_MBR) == 0) return 0;
+
+  inst->hook_av[1] = "mbr";
+  inst->hook_av[2] = NULL;
+
+  return exec_hook(inst, status);
+}
+
+static int exec_compl_hook(install_handle_t* inst, int err, int* status)
+{
+  *status = EFPAK_HOOK_CONTINUE;
+
   if ((inst->hook_flags & EFPAK_HOOK_COMPL) == 0) return 0;
 
   inst->hook_av[1] = "compl";
@@ -1212,7 +1232,7 @@ static int exec_compl_hook(install_handle_t* inst, int err)
   else inst->hook_av[2] = "0";
   inst->hook_av[3] = NULL;
 
-  return exec_hook(inst);
+  return exec_hook(inst, status);
 }
 
 static int install_hook(install_handle_t* inst)
@@ -1267,6 +1287,7 @@ static int install_efpak(install_handle_t* inst)
 
   static const size_t mbr_nblk = sizeof(mbr_t) / DISK_BLOCK_SIZE;
   int err;
+  int status;
 
   while (1)
   {
@@ -1278,20 +1299,15 @@ static int install_efpak(install_handle_t* inst)
     err = efpak_istream_start_block(inst->is);
     if (err) goto on_error;
 
-    err = exec_prex_hook(inst);
-    if (err)
-    {
-      /* 1 is for skipping the block */
-      if (err != 1) goto on_error;
-      err = 0;
-      goto skip_block;
-    }
+    err = exec_prex_hook(inst, &status);
+    if (err) goto on_error;
+    if (status != EFPAK_HOOK_CONTINUE) goto skip_block;
 
     switch (inst->h->type)
     {
     case EFPAK_BTYPE_FORMAT:
       {
-	goto skip_hook;
+	goto skip_block;
 	break ;
       }
 
@@ -1316,36 +1332,58 @@ static int install_efpak(install_handle_t* inst)
     case EFPAK_BTYPE_HOOK:
       {
 	err = install_hook(inst);
-	if (err == 0) err = exec_now_hook(inst);
-	goto skip_hook;
+	if (err) goto on_error;
+	err = exec_now_hook(inst, &status);
+	goto skip_postx;
 	break ;
       }
 
     default:
       {
 	err = -1;
-	goto skip_hook;
+	goto skip_block;
 	break ;
       }
     }
 
-    if (exec_postx_hook(inst, err)) err = -1;
+    if (exec_postx_hook(inst, err, &status))
+    {
+      /* if there was a system error, be sure to stop */
+      if (err == 0) err = -1;
+    }
 
-  skip_hook:
+  skip_postx:
   skip_block:
     efpak_istream_end_block(inst->is);
     if (err) goto on_error;
+
+    /* handle hook status here */
+    if (status == EFPAK_HOOK_STOP_SUCCESS)
+    {
+      err = 0;
+      goto on_stop;
+    }
+    else if (status == EFPAK_HOOK_STOP_ERROR)
+    {
+      err = -1;
+      goto on_stop;
+    }
   }
 
+ on_stop:
   if (inst->flags & INSTALL_FLAG_MBR)
   {
+    err = exec_mbr_hook(inst, &status);
+    if (err) goto on_error;
+    if (status != EFPAK_HOOK_CONTINUE) goto on_error;
+
     /* commit the mbr */
     err = disk_write(inst->disk, 0, mbr_nblk, (const uint8_t*)&inst->mbr);
     if (err) goto on_error;
   }
 
  on_error:
-  if (exec_compl_hook(inst, err)) err = -1;
+  if (exec_compl_hook(inst, err, &status)) err = -1;
   return err;
 }
 

@@ -107,10 +107,18 @@ typedef struct efpak_file_header
 /* the object to execute. */
 typedef struct efpak_hook_header
 {
+  /* a hook can return one of the following values */
+#define EFPAK_HOOK_CONTINUE 0
+#define EFPAK_HOOK_SKIP_BLOCK 1
+#define EFPAK_HOOK_STOP_SUCCESS 2
+#define EFPAK_HOOK_STOP_ERROR 255
+  /* any unknown code: stop with error */
+
 #define EFPAK_HOOK_NOW (1 << 0)
 #define EFPAK_HOOK_PREX (1 << 1)
 #define EFPAK_HOOK_POSTX (1 << 2)
 #define EFPAK_HOOK_COMPL (1 << 3)
+#define EFPAK_HOOK_MBR (1 << 4)
   uint32_t when_flags;
 
 #define EFPAK_HOOK_EXECVE (1 << 0)
